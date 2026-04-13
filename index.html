@@ -1,0 +1,1745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PocketTab — Family Expense Tracker</title>
+  <!--
+    PocketTab: Brutalist Family Expense Tracker
+    Tech: Vanilla HTML/CSS/JS with localStorage persistence
+    Design: White surfaces, navy borders, Space Mono typeface, hard edges
+    Currency: ZAR (South African Rand, R prefix)
+    Max 5 users, multi-device, PIN-based authentication
+  -->
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    /* ===== RESET & BASE ===== */
+    *, *::before, *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --navy: #0A0A0A;
+      --navy-dark: #050505;
+      --white: #FFFFFF;
+      --border: 2px solid var(--navy);
+      --font: 'Space Mono', monospace;
+      --pad: 16px;
+      --pad-sm: 12px;
+    }
+
+    html, body {
+      font-family: var(--font);
+      color: var(--navy);
+      background: var(--white);
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    /* ===== UTILITY ===== */
+    .hidden { display: none !important; }
+
+    /* ===== AUTH SCREEN ===== */
+    #auth-screen {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: var(--pad);
+    }
+
+    .auth-box {
+      width: 100%;
+      max-width: 360px;
+      border: var(--border);
+      padding: var(--pad);
+    }
+
+    .auth-box h1 {
+      font-size: 24px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      margin-bottom: var(--pad);
+      text-align: center;
+    }
+
+    .auth-box h2 {
+      font-size: 14px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: var(--pad);
+    }
+
+    /* ===== FORM ELEMENTS ===== */
+    label {
+      display: block;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      border: var(--border);
+      background: var(--white);
+      font-family: var(--font);
+      font-size: 14px;
+      padding: var(--pad-sm);
+      border-radius: 0;
+      outline: none;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: 4px solid var(--navy);
+      outline-offset: -4px;
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 60px;
+    }
+
+    .form-group {
+      margin-bottom: var(--pad);
+    }
+
+    .error-msg {
+      font-size: 12px;
+      color: var(--navy);
+      font-weight: 700;
+      margin-top: 4px;
+      text-transform: uppercase;
+    }
+
+    /* ===== BUTTONS ===== */
+    button, .btn {
+      font-family: var(--font);
+      font-size: 14px;
+      color: var(--navy);
+      background: var(--white);
+      border: var(--border);
+      border-radius: 0;
+      padding: var(--pad-sm) var(--pad);
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: 700;
+      min-height: 44px;
+      transition: none;
+    }
+
+    button:hover {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    button:active {
+      background: var(--navy-dark);
+      color: var(--white);
+    }
+
+    button.btn-full {
+      width: 100%;
+    }
+
+    button.btn-sm {
+      font-size: 12px;
+      padding: 8px var(--pad-sm);
+      min-height: 36px;
+    }
+
+    button.btn-navy {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    button.btn-navy:hover {
+      background: var(--white);
+      color: var(--navy);
+    }
+
+    /* ===== USER LIST (auth) ===== */
+    .user-list {
+      list-style: none;
+      margin-bottom: var(--pad);
+    }
+
+    .user-list li {
+      border: var(--border);
+      padding: var(--pad-sm);
+      margin-bottom: -2px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 44px;
+    }
+
+    .user-list li:hover {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    .user-list li.selected {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    /* ===== APP LAYOUT ===== */
+    #app-screen {
+      min-height: 100vh;
+    }
+
+    /* Header */
+    .app-header {
+      background: var(--navy);
+      color: var(--white);
+      border-bottom: var(--border);
+      padding: var(--pad-sm) var(--pad);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 56px;
+    }
+
+    .app-header .logo {
+      font-size: 18px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    .app-header .user-info {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      display: flex;
+      align-items: center;
+      gap: var(--pad-sm);
+    }
+
+    .app-header button {
+      color: var(--white);
+      background: transparent;
+      border: 2px solid var(--white);
+      font-size: 12px;
+      padding: 6px var(--pad-sm);
+      min-height: 36px;
+    }
+
+    .app-header button:hover {
+      background: var(--white);
+      color: var(--navy);
+    }
+
+    /* Navigation tabs */
+    .nav-tabs {
+      display: flex;
+      border-bottom: var(--border);
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .nav-tabs button {
+      flex: 1;
+      min-width: max-content;
+      border: none;
+      border-right: var(--border);
+      padding: var(--pad-sm) var(--pad);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      background: var(--white);
+      color: var(--navy);
+      min-height: 44px;
+      white-space: nowrap;
+    }
+
+    .nav-tabs button:last-child {
+      border-right: none;
+    }
+
+    .nav-tabs button:hover {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    .nav-tabs button.active {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    /* Main content */
+    .app-main {
+      padding: var(--pad);
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: var(--pad);
+      padding-bottom: 8px;
+      border-bottom: var(--border);
+    }
+
+    /* ===== METRIC CARDS (Dashboard) ===== */
+    .metric-cards {
+      display: grid;
+      gap: var(--pad);
+    }
+
+    .metric-card {
+      border: var(--border);
+      padding: var(--pad);
+      background: var(--white);
+    }
+
+    .metric-card .metric-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+
+    .metric-card .metric-value {
+      font-size: 32px;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    /* ===== STATUS BADGES ===== */
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      border: var(--border);
+      padding: 2px 8px;
+      background: var(--white);
+      color: var(--navy);
+      white-space: nowrap;
+    }
+
+    /* ===== REQUEST / PAYMENT ROWS ===== */
+    .item-list {
+      list-style: none;
+    }
+
+    .item-row {
+      border: var(--border);
+      padding: var(--pad);
+      margin-bottom: -2px;
+    }
+
+    .item-row .item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: var(--pad-sm);
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    .item-row .item-desc {
+      font-size: 14px;
+      font-weight: 700;
+      flex: 1;
+    }
+
+    .item-row .item-amount {
+      font-size: 18px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .item-row .item-meta {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+
+    .item-row .item-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .item-row .item-actions button {
+      font-size: 12px;
+      padding: 6px var(--pad-sm);
+      min-height: 36px;
+    }
+
+    /* ===== ACTIVITY LOG ===== */
+    .activity-list {
+      list-style: none;
+      counter-reset: activity;
+    }
+
+    .activity-item {
+      border: var(--border);
+      padding: var(--pad-sm) var(--pad);
+      margin-bottom: -2px;
+      display: flex;
+      align-items: center;
+      gap: var(--pad-sm);
+      flex-wrap: wrap;
+    }
+
+    .activity-item::before {
+      counter-increment: activity;
+      content: counter(activity, decimal-leading-zero) ".";
+      font-weight: 700;
+      font-size: 14px;
+      min-width: 32px;
+    }
+
+    .activity-item .activity-text {
+      flex: 1;
+      font-size: 13px;
+    }
+
+    .activity-item .activity-time {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      white-space: nowrap;
+    }
+
+    /* ===== CHAT / MESSAGES ===== */
+    .chat-toggle {
+      font-size: 12px;
+      text-transform: uppercase;
+      cursor: pointer;
+      border: none;
+      background: none;
+      color: var(--navy);
+      font-family: var(--font);
+      font-weight: 700;
+      letter-spacing: 1px;
+      padding: 4px 0;
+      min-height: auto;
+    }
+
+    .chat-toggle:hover {
+      background: none;
+      text-decoration: underline;
+      color: var(--navy);
+    }
+
+    .chat-box {
+      border: var(--border);
+      border-top: none;
+      margin-top: -2px;
+      margin-bottom: -2px;
+    }
+
+    .chat-messages {
+      max-height: 200px;
+      overflow-y: auto;
+      padding: var(--pad-sm);
+    }
+
+    .chat-msg {
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+
+    .chat-msg .chat-author {
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .chat-msg .chat-time {
+      font-size: 10px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .chat-input-row {
+      display: flex;
+      border-top: var(--border);
+    }
+
+    .chat-input-row input {
+      border: none;
+      flex: 1;
+      font-size: 12px;
+    }
+
+    .chat-input-row input:focus {
+      outline: 2px solid var(--navy);
+      outline-offset: -2px;
+    }
+
+    .chat-input-row button {
+      border: none;
+      border-left: var(--border);
+      min-width: 60px;
+      font-size: 12px;
+      min-height: 40px;
+    }
+
+    /* ===== SETTINGS ===== */
+    .settings-section {
+      border: var(--border);
+      padding: var(--pad);
+      margin-bottom: var(--pad);
+    }
+
+    .settings-section h3 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: var(--pad-sm);
+    }
+
+    /* ===== TABS CONTENT ===== */
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ===== EMPTY STATE ===== */
+    .empty-state {
+      border: var(--border);
+      padding: var(--pad);
+      text-align: center;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    /* ===== RESPONSIVE: DESKTOP ===== */
+    @media (min-width: 768px) {
+      .metric-cards {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .app-layout {
+        display: grid;
+        grid-template-columns: 200px 1fr;
+      }
+
+      .nav-tabs {
+        flex-direction: column;
+        border-bottom: none;
+        border-right: var(--border);
+        min-height: calc(100vh - 56px);
+      }
+
+      .nav-tabs button {
+        border-right: none;
+        border-bottom: var(--border);
+        text-align: left;
+      }
+
+      .nav-tabs button:last-child {
+        border-bottom: var(--border);
+      }
+
+      .item-row .item-actions button {
+        width: auto;
+      }
+    }
+
+    /* ===== RESPONSIVE: MOBILE ===== */
+    @media (max-width: 767px) {
+      .item-row .item-actions button {
+        flex: 1;
+        min-width: 80px;
+      }
+
+      button.btn-full-mobile {
+        width: 100%;
+      }
+
+      .app-header .logo {
+        font-size: 14px;
+      }
+    }
+
+    /* Sub-tabs for Requests section */
+    .sub-tabs {
+      display: flex;
+      margin-bottom: var(--pad);
+    }
+
+    .sub-tabs button {
+      flex: 1;
+      border: var(--border);
+      border-right: none;
+      font-size: 12px;
+      padding: 8px;
+      min-height: 40px;
+    }
+
+    .sub-tabs button:last-child {
+      border-right: var(--border);
+    }
+
+    .sub-tabs button.active {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    /* Pay form layout */
+    .pay-form {
+      max-width: 480px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ===== AUTH SCREEN ===== -->
+  <div id="auth-screen">
+    <div class="auth-box">
+      <h1>PocketTab</h1>
+
+      <!-- Step 1: Select or Create User -->
+      <div id="auth-select">
+        <h2>Select User</h2>
+        <ul class="user-list" id="user-list"></ul>
+        <button class="btn-full" id="btn-create-user" style="margin-bottom: 12px;">+ New User</button>
+        <div id="pin-login" class="hidden">
+          <div class="form-group">
+            <label for="login-pin">Enter PIN</label>
+            <input type="password" id="login-pin" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" placeholder="4-digit PIN" autocomplete="off">
+            <div class="error-msg hidden" id="login-error"></div>
+          </div>
+          <button class="btn-full btn-navy" id="btn-login">Login</button>
+        </div>
+      </div>
+
+      <!-- Step 2: Create New User -->
+      <div id="auth-create" class="hidden">
+        <h2>Create Profile</h2>
+        <div class="form-group">
+          <label for="new-name">Name</label>
+          <input type="text" id="new-name" maxlength="20" placeholder="Your name" autocomplete="off">
+          <div class="error-msg hidden" id="name-error"></div>
+        </div>
+        <div class="form-group">
+          <label for="new-pin">Set PIN (4 digits)</label>
+          <input type="password" id="new-pin" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" placeholder="4-digit PIN" autocomplete="off">
+          <div class="error-msg hidden" id="pin-error"></div>
+        </div>
+        <div class="form-group">
+          <label for="confirm-pin">Confirm PIN</label>
+          <input type="password" id="confirm-pin" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" placeholder="Confirm PIN" autocomplete="off">
+          <div class="error-msg hidden" id="confirm-error"></div>
+        </div>
+        <button class="btn-full btn-navy" id="btn-save-user" style="margin-bottom: 8px;">Create</button>
+        <button class="btn-full" id="btn-back-login">Back</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== APP SCREEN ===== -->
+  <div id="app-screen" class="hidden">
+    <!-- Header -->
+    <header class="app-header">
+      <span class="logo">PocketTab</span>
+      <div class="user-info">
+        <span id="header-user-name"></span>
+        <button id="btn-logout">Logout</button>
+      </div>
+    </header>
+
+    <!-- Layout: Nav + Main -->
+    <div class="app-layout">
+      <!-- Navigation -->
+      <nav class="nav-tabs" id="nav-tabs">
+        <button class="active" data-tab="dashboard">Dashboard</button>
+        <button data-tab="requests">Requests</button>
+        <button data-tab="pay">Pay</button>
+        <button data-tab="history">History</button>
+        <button data-tab="settings">Settings</button>
+      </nav>
+
+      <!-- Main Content -->
+      <main class="app-main">
+
+        <!-- Dashboard Tab -->
+        <div class="tab-content active" id="tab-dashboard">
+          <div class="section-title">Dashboard</div>
+          <div class="metric-cards">
+            <div class="metric-card">
+              <div class="metric-label">Total Owed To Me</div>
+              <div class="metric-value" id="metric-owed-to-me">R0</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Total I Owe</div>
+              <div class="metric-value" id="metric-i-owe">R0</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Pending Requests</div>
+              <div class="metric-value" id="metric-pending">0</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Latest Activity</div>
+              <div id="metric-latest" style="font-size: 13px; margin-top: 8px;">No activity yet</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Requests Tab -->
+        <div class="tab-content" id="tab-requests">
+          <div class="section-title">Requests</div>
+
+          <!-- Sub-tabs: Incoming / Outgoing / New Request -->
+          <div class="sub-tabs">
+            <button class="active" data-subtab="incoming">Incoming</button>
+            <button data-subtab="outgoing">Outgoing</button>
+            <button data-subtab="new-request">New Request</button>
+          </div>
+
+          <!-- Incoming Requests -->
+          <div id="subtab-incoming">
+            <ul class="item-list" id="incoming-list"></ul>
+          </div>
+
+          <!-- Outgoing Requests -->
+          <div id="subtab-outgoing" class="hidden">
+            <ul class="item-list" id="outgoing-list"></ul>
+          </div>
+
+          <!-- New Request Form -->
+          <div id="subtab-new-request" class="hidden">
+            <div class="pay-form">
+              <div class="form-group">
+                <label for="req-user">Request From</label>
+                <select id="req-user"></select>
+              </div>
+              <div class="form-group">
+                <label for="req-amount">Amount (R)</label>
+                <input type="number" id="req-amount" min="1" step="0.01" placeholder="0.00" inputmode="decimal">
+                <div class="error-msg hidden" id="req-amount-error"></div>
+              </div>
+              <div class="form-group">
+                <label for="req-reason">Reason</label>
+                <input type="text" id="req-reason" placeholder="e.g. Shopping, Lunch" maxlength="100">
+              </div>
+              <button class="btn-full btn-navy" id="btn-send-request">Send Request</button>
+              <div class="error-msg hidden" id="req-error" style="margin-top: 8px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pay Tab -->
+        <div class="tab-content" id="tab-pay">
+          <div class="section-title">Pay Someone</div>
+
+          <!-- Pending Payments to confirm -->
+          <div id="pending-payments-section" class="hidden" style="margin-bottom: 24px;">
+            <h3 style="font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; font-weight: 700;">Payments Awaiting Confirmation</h3>
+            <ul class="item-list" id="pending-payments-list"></ul>
+          </div>
+
+          <!-- Pay Form -->
+          <div class="pay-form">
+            <div class="form-group">
+              <label for="pay-user">Recipient</label>
+              <select id="pay-user"></select>
+            </div>
+            <div class="form-group">
+              <label for="pay-amount">Amount (R)</label>
+              <input type="number" id="pay-amount" min="1" step="0.01" placeholder="0.00" inputmode="decimal">
+              <div class="error-msg hidden" id="pay-amount-error"></div>
+            </div>
+            <div class="form-group">
+              <label for="pay-message">Message (optional)</label>
+              <textarea id="pay-message" placeholder="e.g. First payment for shopping" maxlength="200"></textarea>
+            </div>
+            <button class="btn-full btn-navy" id="btn-send-payment">Send Payment</button>
+            <div class="error-msg hidden" id="pay-error" style="margin-top: 8px;"></div>
+          </div>
+        </div>
+
+        <!-- History Tab -->
+        <div class="tab-content" id="tab-history">
+          <div class="section-title">Transaction History</div>
+          <ol class="activity-list" id="history-list"></ol>
+        </div>
+
+        <!-- Settings Tab -->
+        <div class="tab-content" id="tab-settings">
+          <div class="section-title">Settings</div>
+
+          <div class="settings-section">
+            <h3>Change PIN</h3>
+            <div class="form-group">
+              <label for="settings-old-pin">Current PIN</label>
+              <input type="password" id="settings-old-pin" maxlength="4" inputmode="numeric" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label for="settings-new-pin">New PIN</label>
+              <input type="password" id="settings-new-pin" maxlength="4" inputmode="numeric" autocomplete="off">
+            </div>
+            <button class="btn-full" id="btn-change-pin">Update PIN</button>
+            <div class="error-msg hidden" id="settings-pin-error" style="margin-top: 8px;"></div>
+          </div>
+
+          <div class="settings-section">
+            <h3>All Users</h3>
+            <ul class="user-list" id="settings-user-list" style="cursor: default;"></ul>
+          </div>
+
+          <div class="settings-section">
+            <h3>Reset All Data</h3>
+            <p style="font-size: 12px; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px;">This will remove all data including users, requests, payments, and messages.</p>
+            <button class="btn-full" id="btn-reset-data">Reset Everything</button>
+          </div>
+        </div>
+
+      </main>
+    </div>
+  </div>
+
+  <script>
+    /**
+     * ===== POCKETTAB: APPLICATION LOGIC =====
+     *
+     * Data Structure (localStorage keys):
+     * - pt_users: Array of {id, name, pin_hash, created_at}
+     * - pt_requests: Array of {id, from_id, to_id, amount, reason, status, created_at, resolved_at}
+     *   status: "pending" | "accepted" | "rejected"
+     * - pt_payments: Array of {id, from_id, to_id, amount, message, status, created_at, resolved_at}
+     *   status: "sent" | "confirmed" | "disputed"
+     * - pt_messages: Array of {id, ref_type, ref_id, user_id, text, timestamp}
+     *   ref_type: "request" | "payment"
+     * - pt_session: {user_id} — current logged-in user
+     *
+     * PIN hashing uses btoa() for demo purposes (NOT production-safe).
+     */
+
+    // ===== DATA ACCESS LAYER =====
+
+    /** Read a JSON array from localStorage by key, defaulting to [] */
+    function getData(key) {
+      try {
+        return JSON.parse(localStorage.getItem(key)) || [];
+      } catch {
+        return [];
+      }
+    }
+
+    /** Write a JSON array to localStorage */
+    function setData(key, data) {
+      localStorage.setItem(key, JSON.stringify(data));
+    }
+
+    /** Generate a simple unique ID */
+    function genId() {
+      return Date.now().toString(36) + Math.random().toString(36).substr(2, 6);
+    }
+
+    /**
+     * Hash a PIN using btoa() — demo only, NOT production-safe.
+     * In production, use bcrypt or similar.
+     */
+    function hashPin(pin) {
+      return btoa('pt_salt_' + pin + '_pepper');
+    }
+
+    /** Format amount with R prefix and two decimal places */
+    function formatAmount(amount) {
+      return 'R' + Number(amount).toFixed(2);
+    }
+
+    /** Format a timestamp into a readable string */
+    function formatTime(ts) {
+      var d = new Date(ts);
+      var day = String(d.getDate()).padStart(2, '0');
+      var mon = String(d.getMonth() + 1).padStart(2, '0');
+      var yr = d.getFullYear();
+      var hr = String(d.getHours()).padStart(2, '0');
+      var min = String(d.getMinutes()).padStart(2, '0');
+      return day + '/' + mon + '/' + yr + ' ' + hr + ':' + min;
+    }
+
+    /** Get user by ID */
+    function getUserById(id) {
+      return getData('pt_users').find(function(u) { return u.id === id; });
+    }
+
+    /** Get user name by ID, returns "Unknown" if not found */
+    function getUserName(id) {
+      var u = getUserById(id);
+      return u ? u.name : 'Unknown';
+    }
+
+    // ===== STATE =====
+    var currentUser = null;
+    var selectedLoginUser = null;
+
+    // ===== DOM REFERENCES =====
+    var authScreen = document.getElementById('auth-screen');
+    var appScreen = document.getElementById('app-screen');
+    var authSelect = document.getElementById('auth-select');
+    var authCreate = document.getElementById('auth-create');
+
+    // ===== INITIALIZATION =====
+    function init() {
+      renderUserList();
+      setupEventListeners();
+      // Check for existing session
+      var session = null;
+      try {
+        session = JSON.parse(localStorage.getItem('pt_session'));
+      } catch(e) { /* ignore */ }
+      if (session && session.user_id) {
+        var user = getUserById(session.user_id);
+        if (user) {
+          loginAs(user);
+          return;
+        }
+      }
+      showAuth();
+    }
+
+    // ===== AUTH FUNCTIONS =====
+
+    /** Show authentication screen */
+    function showAuth() {
+      authScreen.classList.remove('hidden');
+      appScreen.classList.add('hidden');
+      currentUser = null;
+      selectedLoginUser = null;
+      localStorage.removeItem('pt_session');
+      renderUserList();
+      document.getElementById('pin-login').classList.add('hidden');
+      document.getElementById('login-pin').value = '';
+      hideError('login-error');
+    }
+
+    /** Render the user list on auth screen */
+    function renderUserList() {
+      var users = getData('pt_users');
+      var list = document.getElementById('user-list');
+      list.innerHTML = '';
+
+      if (users.length === 0) {
+        list.innerHTML = '<li style="cursor:default; font-size:12px; text-transform:uppercase; letter-spacing:1px;">No users yet. Create one below.</li>';
+        document.getElementById('btn-create-user').style.display = users.length >= 5 ? 'none' : '';
+        return;
+      }
+
+      users.forEach(function(u) {
+        var li = document.createElement('li');
+        li.textContent = u.name;
+        li.setAttribute('data-id', u.id);
+        li.addEventListener('click', function() {
+          selectLoginUser(u);
+        });
+        list.appendChild(li);
+      });
+
+      document.getElementById('btn-create-user').style.display = users.length >= 5 ? 'none' : '';
+    }
+
+    /** Select a user to log in */
+    function selectLoginUser(user) {
+      selectedLoginUser = user;
+      // Highlight selected
+      var items = document.querySelectorAll('#user-list li');
+      items.forEach(function(li) {
+        li.classList.toggle('selected', li.getAttribute('data-id') === user.id);
+      });
+      // Show PIN input
+      document.getElementById('pin-login').classList.remove('hidden');
+      document.getElementById('login-pin').value = '';
+      document.getElementById('login-pin').focus();
+      hideError('login-error');
+    }
+
+    /** Attempt login with PIN */
+    function attemptLogin() {
+      var pin = document.getElementById('login-pin').value.trim();
+      if (!selectedLoginUser) {
+        showError('login-error', 'Select a user first');
+        return;
+      }
+      if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+        showError('login-error', 'PIN must be 4 digits');
+        return;
+      }
+      if (hashPin(pin) !== selectedLoginUser.pin_hash) {
+        showError('login-error', 'Incorrect PIN');
+        return;
+      }
+      loginAs(selectedLoginUser);
+    }
+
+    /** Log in as a specific user */
+    function loginAs(user) {
+      currentUser = user;
+      localStorage.setItem('pt_session', JSON.stringify({ user_id: user.id }));
+      authScreen.classList.add('hidden');
+      appScreen.classList.remove('hidden');
+      document.getElementById('header-user-name').textContent = user.name;
+      switchTab('dashboard');
+      refreshApp();
+    }
+
+    /** Create a new user */
+    function createUser() {
+      var name = document.getElementById('new-name').value.trim();
+      var pin = document.getElementById('new-pin').value.trim();
+      var confirmPin = document.getElementById('confirm-pin').value.trim();
+      var valid = true;
+
+      hideError('name-error');
+      hideError('pin-error');
+      hideError('confirm-error');
+
+      if (!name || name.length < 1) {
+        showError('name-error', 'Name is required');
+        valid = false;
+      }
+
+      // Check duplicate name
+      var users = getData('pt_users');
+      if (users.some(function(u) { return u.name.toLowerCase() === name.toLowerCase(); })) {
+        showError('name-error', 'Name already taken');
+        valid = false;
+      }
+
+      if (users.length >= 5) {
+        showError('name-error', 'Maximum 5 users reached');
+        return;
+      }
+
+      if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+        showError('pin-error', 'PIN must be 4 digits');
+        valid = false;
+      }
+
+      if (pin !== confirmPin) {
+        showError('confirm-error', 'PINs do not match');
+        valid = false;
+      }
+
+      if (!valid) return;
+
+      var newUser = {
+        id: genId(),
+        name: name,
+        pin_hash: hashPin(pin),
+        created_at: new Date().toISOString()
+      };
+
+      users.push(newUser);
+      setData('pt_users', users);
+
+      // Switch back to login
+      authCreate.classList.add('hidden');
+      authSelect.classList.remove('hidden');
+      document.getElementById('new-name').value = '';
+      document.getElementById('new-pin').value = '';
+      document.getElementById('confirm-pin').value = '';
+      renderUserList();
+      selectLoginUser(newUser);
+    }
+
+    // ===== ERROR HELPERS =====
+    function showError(id, msg) {
+      var el = document.getElementById(id);
+      el.textContent = msg;
+      el.classList.remove('hidden');
+    }
+
+    function hideError(id) {
+      var el = document.getElementById(id);
+      el.textContent = '';
+      el.classList.add('hidden');
+    }
+
+    // ===== TAB NAVIGATION =====
+    function switchTab(tabName) {
+      // Update nav buttons
+      document.querySelectorAll('#nav-tabs button').forEach(function(btn) {
+        btn.classList.toggle('active', btn.getAttribute('data-tab') === tabName);
+      });
+      // Update tab content
+      document.querySelectorAll('.tab-content').forEach(function(tc) {
+        tc.classList.toggle('active', tc.id === 'tab-' + tabName);
+      });
+      // Refresh relevant data
+      refreshApp();
+    }
+
+    // ===== SUB-TAB NAVIGATION (Requests) =====
+    function switchSubTab(subTabName) {
+      document.querySelectorAll('.sub-tabs button').forEach(function(btn) {
+        btn.classList.toggle('active', btn.getAttribute('data-subtab') === subTabName);
+      });
+      document.getElementById('subtab-incoming').classList.toggle('hidden', subTabName !== 'incoming');
+      document.getElementById('subtab-outgoing').classList.toggle('hidden', subTabName !== 'outgoing');
+      document.getElementById('subtab-new-request').classList.toggle('hidden', subTabName !== 'new-request');
+    }
+
+    // ===== REFRESH ALL APP DATA =====
+    function refreshApp() {
+      if (!currentUser) return;
+      refreshDashboard();
+      refreshRequests();
+      refreshPayTab();
+      refreshHistory();
+      refreshSettings();
+      populateUserDropdowns();
+    }
+
+    // ===== POPULATE USER DROPDOWNS =====
+    function populateUserDropdowns() {
+      var users = getData('pt_users').filter(function(u) { return u.id !== currentUser.id; });
+      var dropdowns = [document.getElementById('req-user'), document.getElementById('pay-user')];
+
+      dropdowns.forEach(function(sel) {
+        var currentVal = sel.value;
+        sel.innerHTML = '<option value="">-- Select User --</option>';
+        users.forEach(function(u) {
+          var opt = document.createElement('option');
+          opt.value = u.id;
+          opt.textContent = u.name;
+          sel.appendChild(opt);
+        });
+        if (currentVal) sel.value = currentVal;
+      });
+    }
+
+    // ===== DASHBOARD =====
+    function refreshDashboard() {
+      var requests = getData('pt_requests');
+      var payments = getData('pt_payments');
+      var uid = currentUser.id;
+
+      // Calculate net debts between user pairs.
+      // Accepted requests create debts: to_id owes from_id.
+      // Confirmed payments reduce debts: from_id paid to_id.
+
+      var owedToMe = 0; // Total others owe to current user
+      var iOwe = 0; // Total current user owes others
+
+      // From accepted requests: from_id is owed by to_id
+      requests.forEach(function(r) {
+        if (r.status !== 'accepted') return;
+        if (r.from_id === uid) {
+          // I requested from someone, they accepted — they owe me
+          owedToMe += Number(r.amount);
+        }
+        if (r.to_id === uid) {
+          // Someone requested from me, I accepted — I owe them
+          iOwe += Number(r.amount);
+        }
+      });
+
+      // From confirmed payments: from_id paid to_id
+      payments.forEach(function(p) {
+        if (p.status !== 'confirmed') return;
+        if (p.from_id === uid) {
+          // I paid someone — reduce what I owe
+          iOwe -= Number(p.amount);
+        }
+        if (p.to_id === uid) {
+          // Someone paid me — reduce what they owe me
+          owedToMe -= Number(p.amount);
+        }
+      });
+
+      // Clamp to 0 minimum
+      owedToMe = Math.max(0, owedToMe);
+      iOwe = Math.max(0, iOwe);
+
+      document.getElementById('metric-owed-to-me').textContent = formatAmount(owedToMe);
+      document.getElementById('metric-i-owe').textContent = formatAmount(iOwe);
+
+      // Pending requests (incoming pending)
+      var pendingCount = requests.filter(function(r) {
+        return r.to_id === uid && r.status === 'pending';
+      }).length;
+      // Also count pending payments awaiting my confirmation
+      pendingCount += payments.filter(function(p) {
+        return p.to_id === uid && p.status === 'sent';
+      }).length;
+      document.getElementById('metric-pending').textContent = pendingCount;
+
+      // Latest activity
+      var allActivity = getActivityForUser(uid);
+      var latestEl = document.getElementById('metric-latest');
+      if (allActivity.length > 0) {
+        var latest = allActivity[0];
+        latestEl.textContent = latest.text;
+      } else {
+        latestEl.textContent = 'No activity yet';
+      }
+    }
+
+    // ===== REQUESTS TAB =====
+    function refreshRequests() {
+      var requests = getData('pt_requests');
+      var uid = currentUser.id;
+
+      // Incoming: requests TO me (I need to accept/reject)
+      var incoming = requests.filter(function(r) { return r.to_id === uid; })
+        .sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); });
+
+      var incomingList = document.getElementById('incoming-list');
+      incomingList.innerHTML = '';
+
+      if (incoming.length === 0) {
+        incomingList.innerHTML = '<div class="empty-state">No incoming requests</div>';
+      } else {
+        incoming.forEach(function(r) {
+          incomingList.appendChild(createRequestRow(r, 'incoming'));
+        });
+      }
+
+      // Outgoing: requests FROM me
+      var outgoing = requests.filter(function(r) { return r.from_id === uid; })
+        .sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); });
+
+      var outgoingList = document.getElementById('outgoing-list');
+      outgoingList.innerHTML = '';
+
+      if (outgoing.length === 0) {
+        outgoingList.innerHTML = '<div class="empty-state">No outgoing requests</div>';
+      } else {
+        outgoing.forEach(function(r) {
+          outgoingList.appendChild(createRequestRow(r, 'outgoing'));
+        });
+      }
+    }
+
+    /** Create a request row element */
+    function createRequestRow(req, direction) {
+      var li = document.createElement('li');
+      li.className = 'item-row';
+
+      var fromName = getUserName(req.from_id);
+      var toName = getUserName(req.to_id);
+      var reason = req.reason ? ' for ' + req.reason : '';
+
+      var descText = direction === 'incoming'
+        ? fromName + ' requests ' + formatAmount(req.amount) + ' from you' + reason
+        : 'You requested ' + formatAmount(req.amount) + ' from ' + toName + reason;
+
+      li.innerHTML =
+        '<div class="item-header">' +
+          '<span class="item-desc">' + escapeHtml(descText) + '</span>' +
+          '<span class="badge">' + req.status.toUpperCase() + '</span>' +
+        '</div>' +
+        '<div class="item-meta">' + formatTime(req.created_at) + '</div>' +
+        '<div class="item-actions" id="actions-' + req.id + '"></div>' +
+        '<div id="chat-area-' + req.id + '"></div>';
+
+      var actionsDiv = li.querySelector('#actions-' + req.id);
+
+      // Incoming pending: show Accept / Reject
+      if (direction === 'incoming' && req.status === 'pending') {
+        var acceptBtn = document.createElement('button');
+        acceptBtn.className = 'btn-sm btn-navy';
+        acceptBtn.textContent = 'Accept';
+        acceptBtn.addEventListener('click', function() { handleRequest(req.id, 'accepted'); });
+
+        var rejectBtn = document.createElement('button');
+        rejectBtn.className = 'btn-sm';
+        rejectBtn.textContent = 'Reject';
+        rejectBtn.addEventListener('click', function() { handleRequest(req.id, 'rejected'); });
+
+        actionsDiv.appendChild(acceptBtn);
+        actionsDiv.appendChild(rejectBtn);
+      }
+
+      // Chat toggle
+      var chatToggle = document.createElement('button');
+      chatToggle.className = 'chat-toggle';
+      chatToggle.textContent = '[ Messages ]';
+      chatToggle.addEventListener('click', function() {
+        toggleChat(req.id, 'request', li.querySelector('#chat-area-' + req.id));
+      });
+      actionsDiv.appendChild(chatToggle);
+
+      return li;
+    }
+
+    /** Handle accepting or rejecting a request */
+    function handleRequest(reqId, newStatus) {
+      var requests = getData('pt_requests');
+      var idx = requests.findIndex(function(r) { return r.id === reqId; });
+      if (idx === -1) return;
+
+      requests[idx].status = newStatus;
+      requests[idx].resolved_at = new Date().toISOString();
+      setData('pt_requests', requests);
+      refreshApp();
+    }
+
+    /** Send a new money request */
+    function sendRequest() {
+      var toId = document.getElementById('req-user').value;
+      var amount = document.getElementById('req-amount').value;
+      var reason = document.getElementById('req-reason').value.trim();
+      var valid = true;
+
+      hideError('req-amount-error');
+      hideError('req-error');
+
+      if (!toId) {
+        showError('req-error', 'Select a user to request from');
+        valid = false;
+      }
+
+      var amountNum = parseFloat(amount);
+      if (!amount || isNaN(amountNum) || amountNum <= 0) {
+        showError('req-amount-error', 'Amount must be greater than 0');
+        valid = false;
+      }
+
+      if (!valid) return;
+
+      var requests = getData('pt_requests');
+      var newReq = {
+        id: genId(),
+        from_id: currentUser.id,
+        to_id: toId,
+        amount: amountNum,
+        reason: reason,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        resolved_at: null
+      };
+
+      requests.push(newReq);
+      setData('pt_requests', requests);
+
+      // Clear form
+      document.getElementById('req-user').value = '';
+      document.getElementById('req-amount').value = '';
+      document.getElementById('req-reason').value = '';
+
+      // Switch to outgoing tab
+      switchSubTab('outgoing');
+      refreshApp();
+    }
+
+    // ===== PAY TAB =====
+    function refreshPayTab() {
+      var payments = getData('pt_payments');
+      var uid = currentUser.id;
+
+      // Show pending payments awaiting my confirmation (I'm the recipient)
+      var pending = payments.filter(function(p) {
+        return p.to_id === uid && p.status === 'sent';
+      }).sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); });
+
+      var section = document.getElementById('pending-payments-section');
+      var list = document.getElementById('pending-payments-list');
+      list.innerHTML = '';
+
+      if (pending.length > 0) {
+        section.classList.remove('hidden');
+        pending.forEach(function(p) {
+          list.appendChild(createPaymentRow(p));
+        });
+      } else {
+        section.classList.add('hidden');
+      }
+    }
+
+    /** Create a payment row with confirm/dispute actions */
+    function createPaymentRow(payment) {
+      var li = document.createElement('li');
+      li.className = 'item-row';
+
+      var fromName = getUserName(payment.from_id);
+      var msg = payment.message ? ' — "' + payment.message + '"' : '';
+
+      li.innerHTML =
+        '<div class="item-header">' +
+          '<span class="item-desc">' + escapeHtml(fromName) + ' sent you ' + formatAmount(payment.amount) + escapeHtml(msg) + '</span>' +
+          '<span class="badge">' + payment.status.toUpperCase() + '</span>' +
+        '</div>' +
+        '<div class="item-meta">' + formatTime(payment.created_at) + '</div>' +
+        '<div class="item-actions" id="pay-actions-' + payment.id + '"></div>' +
+        '<div id="chat-area-pay-' + payment.id + '"></div>';
+
+      var actionsDiv = li.querySelector('#pay-actions-' + payment.id);
+
+      if (payment.status === 'sent') {
+        var confirmBtn = document.createElement('button');
+        confirmBtn.className = 'btn-sm btn-navy';
+        confirmBtn.textContent = 'Confirm';
+        confirmBtn.addEventListener('click', function() { handlePayment(payment.id, 'confirmed'); });
+
+        var disputeBtn = document.createElement('button');
+        disputeBtn.className = 'btn-sm';
+        disputeBtn.textContent = 'Dispute';
+        disputeBtn.addEventListener('click', function() { handlePayment(payment.id, 'disputed'); });
+
+        actionsDiv.appendChild(confirmBtn);
+        actionsDiv.appendChild(disputeBtn);
+      }
+
+      // Chat toggle
+      var chatToggle = document.createElement('button');
+      chatToggle.className = 'chat-toggle';
+      chatToggle.textContent = '[ Messages ]';
+      chatToggle.addEventListener('click', function() {
+        toggleChat(payment.id, 'payment', li.querySelector('#chat-area-pay-' + payment.id));
+      });
+      actionsDiv.appendChild(chatToggle);
+
+      return li;
+    }
+
+    /** Handle confirming or disputing a payment */
+    function handlePayment(payId, newStatus) {
+      var payments = getData('pt_payments');
+      var idx = payments.findIndex(function(p) { return p.id === payId; });
+      if (idx === -1) return;
+
+      payments[idx].status = newStatus;
+      payments[idx].resolved_at = new Date().toISOString();
+      setData('pt_payments', payments);
+      refreshApp();
+    }
+
+    /** Send a new payment */
+    function sendPayment() {
+      var toId = document.getElementById('pay-user').value;
+      var amount = document.getElementById('pay-amount').value;
+      var message = document.getElementById('pay-message').value.trim();
+      var valid = true;
+
+      hideError('pay-amount-error');
+      hideError('pay-error');
+
+      if (!toId) {
+        showError('pay-error', 'Select a recipient');
+        valid = false;
+      }
+
+      var amountNum = parseFloat(amount);
+      if (!amount || isNaN(amountNum) || amountNum <= 0) {
+        showError('pay-amount-error', 'Amount must be greater than 0');
+        valid = false;
+      }
+
+      if (!valid) return;
+
+      var payments = getData('pt_payments');
+      var newPay = {
+        id: genId(),
+        from_id: currentUser.id,
+        to_id: toId,
+        amount: amountNum,
+        message: message,
+        status: 'sent',
+        created_at: new Date().toISOString(),
+        resolved_at: null
+      };
+
+      payments.push(newPay);
+      setData('pt_payments', payments);
+
+      // If there's a message, auto-create a chat message
+      if (message) {
+        var messages = getData('pt_messages');
+        messages.push({
+          id: genId(),
+          ref_type: 'payment',
+          ref_id: newPay.id,
+          user_id: currentUser.id,
+          text: message,
+          timestamp: new Date().toISOString()
+        });
+        setData('pt_messages', messages);
+      }
+
+      // Clear form
+      document.getElementById('pay-user').value = '';
+      document.getElementById('pay-amount').value = '';
+      document.getElementById('pay-message').value = '';
+
+      refreshApp();
+    }
+
+    // ===== CHAT / MESSAGES =====
+
+    /** Toggle chat panel for a request or payment */
+    function toggleChat(refId, refType, container) {
+      if (container.querySelector('.chat-box')) {
+        container.innerHTML = '';
+        return;
+      }
+      renderChat(refId, refType, container);
+    }
+
+    /** Render chat messages for a request or payment */
+    function renderChat(refId, refType, container) {
+      var messages = getData('pt_messages').filter(function(m) {
+        return m.ref_id === refId && m.ref_type === refType;
+      }).sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+
+      var chatHtml =
+        '<div class="chat-box">' +
+          '<div class="chat-messages" id="chat-msgs-' + refId + '">';
+
+      if (messages.length === 0) {
+        chatHtml += '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;">No messages yet</div>';
+      } else {
+        messages.forEach(function(m) {
+          chatHtml +=
+            '<div class="chat-msg">' +
+              '<span class="chat-author">' + escapeHtml(getUserName(m.user_id)) + '</span> ' +
+              '<span class="chat-time">' + formatTime(m.timestamp) + '</span>' +
+              '<div>' + escapeHtml(m.text) + '</div>' +
+            '</div>';
+        });
+      }
+
+      chatHtml +=
+          '</div>' +
+          '<div class="chat-input-row">' +
+            '<input type="text" id="chat-input-' + refId + '" placeholder="Type a message..." maxlength="200">' +
+            '<button id="chat-send-' + refId + '">Send</button>' +
+          '</div>' +
+        '</div>';
+
+      container.innerHTML = chatHtml;
+
+      // Scroll to bottom of messages
+      var msgsDiv = container.querySelector('#chat-msgs-' + refId);
+      msgsDiv.scrollTop = msgsDiv.scrollHeight;
+
+      // Add event listeners
+      var sendBtn = container.querySelector('#chat-send-' + refId);
+      var input = container.querySelector('#chat-input-' + refId);
+
+      sendBtn.addEventListener('click', function() {
+        sendChatMessage(refId, refType, input, container);
+      });
+
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+          sendChatMessage(refId, refType, input, container);
+        }
+      });
+    }
+
+    /** Send a chat message */
+    function sendChatMessage(refId, refType, inputEl, container) {
+      var text = inputEl.value.trim();
+      if (!text) return;
+
+      var messages = getData('pt_messages');
+      messages.push({
+        id: genId(),
+        ref_type: refType,
+        ref_id: refId,
+        user_id: currentUser.id,
+        text: text,
+        timestamp: new Date().toISOString()
+      });
+      setData('pt_messages', messages);
+
+      // Re-render chat
+      renderChat(refId, refType, container);
+    }
+
+    // ===== HISTORY TAB =====
+    function refreshHistory() {
+      var uid = currentUser.id;
+      var allActivity = getActivityForUser(uid);
+
+      var historyList = document.getElementById('history-list');
+      historyList.innerHTML = '';
+
+      if (allActivity.length === 0) {
+        historyList.innerHTML = '<div class="empty-state">No transaction history</div>';
+        return;
+      }
+
+      allActivity.forEach(function(act) {
+        var li = document.createElement('li');
+        li.className = 'activity-item';
+        li.innerHTML =
+          '<span class="activity-text">' + escapeHtml(act.text) + '</span>' +
+          '<span class="badge">' + act.status.toUpperCase() + '</span>' +
+          '<span class="activity-time">' + formatTime(act.timestamp) + '</span>';
+        historyList.appendChild(li);
+      });
+    }
+
+    /** Get all activity (requests + payments) for a user, sorted by time desc */
+    function getActivityForUser(uid) {
+      var requests = getData('pt_requests');
+      var payments = getData('pt_payments');
+      var activity = [];
+
+      requests.forEach(function(r) {
+        if (r.from_id !== uid && r.to_id !== uid) return;
+        var fromName = getUserName(r.from_id);
+        var toName = getUserName(r.to_id);
+        var reason = r.reason ? ' for ' + r.reason : '';
+        activity.push({
+          text: fromName + ' \u2192 ' + toName + ' ' + formatAmount(r.amount) + ' request' + reason,
+          status: r.status,
+          timestamp: r.resolved_at || r.created_at
+        });
+      });
+
+      payments.forEach(function(p) {
+        if (p.from_id !== uid && p.to_id !== uid) return;
+        var fromName = getUserName(p.from_id);
+        var toName = getUserName(p.to_id);
+        activity.push({
+          text: fromName + ' \u2192 ' + toName + ' ' + formatAmount(p.amount) + ' payment',
+          status: p.status,
+          timestamp: p.resolved_at || p.created_at
+        });
+      });
+
+      activity.sort(function(a, b) { return new Date(b.timestamp) - new Date(a.timestamp); });
+      return activity;
+    }
+
+    // ===== SETTINGS =====
+    function refreshSettings() {
+      var users = getData('pt_users');
+      var list = document.getElementById('settings-user-list');
+      list.innerHTML = '';
+      users.forEach(function(u) {
+        var li = document.createElement('li');
+        li.style.cursor = 'default';
+        li.textContent = u.name + (u.id === currentUser.id ? ' (you)' : '');
+        list.appendChild(li);
+      });
+    }
+
+    /** Change the current user's PIN */
+    function changePin() {
+      var oldPin = document.getElementById('settings-old-pin').value.trim();
+      var newPin = document.getElementById('settings-new-pin').value.trim();
+
+      hideError('settings-pin-error');
+
+      if (hashPin(oldPin) !== currentUser.pin_hash) {
+        showError('settings-pin-error', 'Current PIN is incorrect');
+        return;
+      }
+
+      if (newPin.length !== 4 || !/^\d{4}$/.test(newPin)) {
+        showError('settings-pin-error', 'New PIN must be 4 digits');
+        return;
+      }
+
+      var users = getData('pt_users');
+      var idx = users.findIndex(function(u) { return u.id === currentUser.id; });
+      if (idx === -1) return;
+
+      users[idx].pin_hash = hashPin(newPin);
+      setData('pt_users', users);
+      currentUser.pin_hash = users[idx].pin_hash;
+
+      document.getElementById('settings-old-pin').value = '';
+      document.getElementById('settings-new-pin').value = '';
+      showError('settings-pin-error', 'PIN updated successfully');
+    }
+
+    /** Reset all application data */
+    function resetAllData() {
+      if (!confirm('Are you sure you want to reset ALL data? This cannot be undone.')) return;
+      localStorage.removeItem('pt_users');
+      localStorage.removeItem('pt_requests');
+      localStorage.removeItem('pt_payments');
+      localStorage.removeItem('pt_messages');
+      localStorage.removeItem('pt_session');
+      showAuth();
+    }
+
+    // ===== XSS PROTECTION =====
+    /** Escape HTML to prevent XSS attacks */
+    function escapeHtml(str) {
+      if (!str) return '';
+      var div = document.createElement('div');
+      div.appendChild(document.createTextNode(str));
+      return div.innerHTML;
+    }
+
+    // ===== EVENT LISTENERS =====
+    function setupEventListeners() {
+      // Auth: create user toggle
+      document.getElementById('btn-create-user').addEventListener('click', function() {
+        authSelect.classList.add('hidden');
+        authCreate.classList.remove('hidden');
+        document.getElementById('new-name').focus();
+      });
+
+      document.getElementById('btn-back-login').addEventListener('click', function() {
+        authCreate.classList.add('hidden');
+        authSelect.classList.remove('hidden');
+        hideError('name-error');
+        hideError('pin-error');
+        hideError('confirm-error');
+      });
+
+      // Auth: login
+      document.getElementById('btn-login').addEventListener('click', attemptLogin);
+      document.getElementById('login-pin').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') attemptLogin();
+      });
+
+      // Auth: save new user
+      document.getElementById('btn-save-user').addEventListener('click', createUser);
+      document.getElementById('confirm-pin').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') createUser();
+      });
+
+      // Logout
+      document.getElementById('btn-logout').addEventListener('click', showAuth);
+
+      // Tab navigation
+      document.querySelectorAll('#nav-tabs button').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          switchTab(btn.getAttribute('data-tab'));
+        });
+      });
+
+      // Sub-tab navigation (Requests)
+      document.querySelectorAll('.sub-tabs button').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          switchSubTab(btn.getAttribute('data-subtab'));
+        });
+      });
+
+      // Send request
+      document.getElementById('btn-send-request').addEventListener('click', sendRequest);
+
+      // Send payment
+      document.getElementById('btn-send-payment').addEventListener('click', sendPayment);
+
+      // Settings: change PIN
+      document.getElementById('btn-change-pin').addEventListener('click', changePin);
+
+      // Settings: reset data
+      document.getElementById('btn-reset-data').addEventListener('click', resetAllData);
+    }
+
+    // ===== START =====
+    init();
+  </script>
+</body>
+</html>
