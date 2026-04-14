@@ -9,7 +9,7 @@
     Tech: Node.js/Express backend, SQLite database, vanilla HTML/CSS/JS frontend
     Design: White surfaces, navy borders, Space Mono typeface, hard edges
     Currency: ZAR (South African Rand, R prefix)
-    Max 5 users, multi-device sync, PIN-based authentication with JWT
+    Unlimited users, multi-device sync, PIN-based authentication with JWT
   -->
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
   <style>
@@ -983,7 +983,7 @@
         list.appendChild(li);
       });
 
-      document.getElementById('btn-create-user').style.display = users.length >= 5 ? 'none' : '';
+      document.getElementById('btn-create-user').style.display = '';
     }
 
     /** Select a user to log in */

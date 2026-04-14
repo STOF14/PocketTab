@@ -4,7 +4,7 @@
 
 ## Features
 
-- **Multi-user support** — Up to 5 users with PIN-based authentication
+- **Multi-user support** — Unlimited users with PIN-based authentication
 - **Multi-device sync** — All data stored on the server, accessible from any device
 - **Money Requests** — Request money from other users, accept or reject incoming requests
 - **Payments** — Send payments to settle debts, with confirm/dispute workflow

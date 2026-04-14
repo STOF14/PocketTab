@@ -26,12 +26,6 @@ router.post('/register', (req, res) => {
 
   const trimmedName = name.trim().slice(0, 20);
 
-  // Check user limit
-  const count = db.prepare('SELECT COUNT(*) as cnt FROM users').get().cnt;
-  if (count >= 5) {
-    return res.status(400).json({ error: 'Maximum 5 users reached' });
-  }
-
   // Check duplicate name
   const existing = db.prepare('SELECT id FROM users WHERE name = ? COLLATE NOCASE').get(trimmedName);
   if (existing) {
