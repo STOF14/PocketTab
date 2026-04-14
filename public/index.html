@@ -6,10 +6,10 @@
   <title>PocketTab — Family Expense Tracker</title>
   <!--
     PocketTab: Brutalist Family Expense Tracker
-    Tech: Vanilla HTML/CSS/JS with localStorage persistence
+    Tech: Node.js/Express backend, SQLite database, vanilla HTML/CSS/JS frontend
     Design: White surfaces, navy borders, Space Mono typeface, hard edges
     Currency: ZAR (South African Rand, R prefix)
-    Max 5 users, multi-device, PIN-based authentication
+    Max 5 users, multi-device sync, PIN-based authentication with JWT
   -->
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
   <style>
@@ -809,49 +809,82 @@
 
   <script>
     /**
-     * ===== POCKETTAB: APPLICATION LOGIC =====
+     * ===== POCKETTAB: FULL-STACK APPLICATION LOGIC =====
      *
-     * Data Structure (localStorage keys):
-     * - pt_users: Array of {id, name, pin_hash, created_at}
-     * - pt_requests: Array of {id, from_id, to_id, amount, reason, status, created_at, resolved_at}
-     *   status: "pending" | "accepted" | "rejected"
-     * - pt_payments: Array of {id, from_id, to_id, amount, message, status, created_at, resolved_at}
-     *   status: "sent" | "confirmed" | "disputed"
-     * - pt_messages: Array of {id, ref_type, ref_id, user_id, text, timestamp}
-     *   ref_type: "request" | "payment"
-     * - pt_session: {user_id} — current logged-in user
+     * All data is stored on the server via REST API.
+     * Authentication uses JWT tokens stored in localStorage.
+     * Data syncs across all users and devices through the shared backend.
      *
-     * PIN hashing uses btoa() for demo purposes (NOT production-safe).
+     * API Endpoints:
+     *   GET    /api/auth/users         — List all users (public)
+     *   POST   /api/auth/register      — Create user (returns JWT)
+     *   POST   /api/auth/login         — Login (returns JWT)
+     *   GET    /api/requests           — List requests for current user
+     *   POST   /api/requests           — Create a request
+     *   PATCH  /api/requests/:id       — Accept/reject a request
+     *   GET    /api/payments           — List payments for current user
+     *   POST   /api/payments           — Send a payment
+     *   PATCH  /api/payments/:id       — Confirm/dispute a payment
+     *   GET    /api/messages?refType=&refId= — Get messages
+     *   POST   /api/messages           — Send a message
+     *   PATCH  /api/users/pin          — Change PIN
      */
 
-    // ===== DATA ACCESS LAYER =====
+    // ===== API HELPER =====
+    var authToken = localStorage.getItem('pt_token') || null;
 
-    /** Read a JSON array from localStorage by key, defaulting to [] */
-    function getData(key) {
+    async function api(method, path, body) {
+      var opts = {
+        method: method,
+        headers: { 'Content-Type': 'application/json' }
+      };
+      if (authToken) {
+        opts.headers['Authorization'] = 'Bearer ' + authToken;
+      }
+      if (body) {
+        opts.body = JSON.stringify(body);
+      }
+      var res = await fetch('/api' + path, opts);
+      var data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'API error');
+      }
+      return data;
+    }
+
+    // ===== CACHES (loaded from server) =====
+    var cachedUsers = [];
+    var cachedRequests = [];
+    var cachedPayments = [];
+
+    /** Load users from server */
+    async function loadUsers() {
       try {
-        return JSON.parse(localStorage.getItem(key)) || [];
-      } catch {
-        return [];
+        cachedUsers = await api('GET', '/auth/users');
+      } catch (e) {
+        cachedUsers = [];
       }
     }
 
-    /** Write a JSON array to localStorage */
-    function setData(key, data) {
-      localStorage.setItem(key, JSON.stringify(data));
+    /** Load requests from server (requires auth) */
+    async function loadRequests() {
+      try {
+        cachedRequests = await api('GET', '/requests');
+      } catch (e) {
+        cachedRequests = [];
+      }
     }
 
-    /** Generate a simple unique ID */
-    function genId() {
-      return Date.now().toString(36) + Math.random().toString(36).substr(2, 6);
+    /** Load payments from server (requires auth) */
+    async function loadPayments() {
+      try {
+        cachedPayments = await api('GET', '/payments');
+      } catch (e) {
+        cachedPayments = [];
+      }
     }
 
-    /**
-     * Hash a PIN using btoa() — demo only, NOT production-safe.
-     * In production, use bcrypt or similar.
-     */
-    function hashPin(pin) {
-      return btoa('pt_salt_' + pin + '_pepper');
-    }
+    // ===== UTILITY FUNCTIONS =====
 
     /** Format amount with R prefix and two decimal places */
     function formatAmount(amount) {
@@ -869,14 +902,9 @@
       return day + '/' + mon + '/' + yr + ' ' + hr + ':' + min;
     }
 
-    /** Get user by ID */
-    function getUserById(id) {
-      return getData('pt_users').find(function(u) { return u.id === id; });
-    }
-
-    /** Get user name by ID, returns "Unknown" if not found */
+    /** Get user name by ID from cache */
     function getUserName(id) {
-      var u = getUserById(id);
+      var u = cachedUsers.find(function(u) { return u.id === id; });
       return u ? u.name : 'Unknown';
     }
 
@@ -891,18 +919,24 @@
     var authCreate = document.getElementById('auth-create');
 
     // ===== INITIALIZATION =====
-    function init() {
-      renderUserList();
+    async function init() {
       setupEventListeners();
-      // Check for existing session
-      var session = null;
+      await loadUsers();
+
+      // Check for existing session token
+      var token = localStorage.getItem('pt_token');
+      var savedUser = null;
       try {
-        session = JSON.parse(localStorage.getItem('pt_session'));
+        savedUser = JSON.parse(localStorage.getItem('pt_user'));
       } catch(e) { /* ignore */ }
-      if (session && session.user_id) {
-        var user = getUserById(session.user_id);
-        if (user) {
-          loginAs(user);
+
+      if (token && savedUser) {
+        authToken = token;
+        // Verify the user still exists
+        var found = cachedUsers.find(function(u) { return u.id === savedUser.id; });
+        if (found) {
+          currentUser = savedUser;
+          enterApp();
           return;
         }
       }
@@ -912,12 +946,15 @@
     // ===== AUTH FUNCTIONS =====
 
     /** Show authentication screen */
-    function showAuth() {
+    async function showAuth() {
       authScreen.classList.remove('hidden');
       appScreen.classList.add('hidden');
       currentUser = null;
       selectedLoginUser = null;
-      localStorage.removeItem('pt_session');
+      authToken = null;
+      localStorage.removeItem('pt_token');
+      localStorage.removeItem('pt_user');
+      await loadUsers();
       renderUserList();
       document.getElementById('pin-login').classList.add('hidden');
       document.getElementById('login-pin').value = '';
@@ -926,13 +963,13 @@
 
     /** Render the user list on auth screen */
     function renderUserList() {
-      var users = getData('pt_users');
+      var users = cachedUsers;
       var list = document.getElementById('user-list');
       list.innerHTML = '';
 
       if (users.length === 0) {
         list.innerHTML = '<li style="cursor:default; font-size:12px; text-transform:uppercase; letter-spacing:1px;">No users yet. Create one below.</li>';
-        document.getElementById('btn-create-user').style.display = users.length >= 5 ? 'none' : '';
+        document.getElementById('btn-create-user').style.display = '';
         return;
       }
 
@@ -952,20 +989,18 @@
     /** Select a user to log in */
     function selectLoginUser(user) {
       selectedLoginUser = user;
-      // Highlight selected
       var items = document.querySelectorAll('#user-list li');
       items.forEach(function(li) {
         li.classList.toggle('selected', li.getAttribute('data-id') === user.id);
       });
-      // Show PIN input
       document.getElementById('pin-login').classList.remove('hidden');
       document.getElementById('login-pin').value = '';
       document.getElementById('login-pin').focus();
       hideError('login-error');
     }
 
-    /** Attempt login with PIN */
-    function attemptLogin() {
+    /** Attempt login with PIN — calls server */
+    async function attemptLogin() {
       var pin = document.getElementById('login-pin').value.trim();
       if (!selectedLoginUser) {
         showError('login-error', 'Select a user first');
@@ -975,26 +1010,32 @@
         showError('login-error', 'PIN must be 4 digits');
         return;
       }
-      if (hashPin(pin) !== selectedLoginUser.pin_hash) {
-        showError('login-error', 'Incorrect PIN');
-        return;
+
+      try {
+        var result = await api('POST', '/auth/login', {
+          userId: selectedLoginUser.id,
+          pin: pin
+        });
+        authToken = result.token;
+        currentUser = result.user;
+        localStorage.setItem('pt_token', result.token);
+        localStorage.setItem('pt_user', JSON.stringify(result.user));
+        enterApp();
+      } catch (e) {
+        showError('login-error', e.message || 'Incorrect PIN');
       }
-      loginAs(selectedLoginUser);
     }
 
-    /** Log in as a specific user */
-    function loginAs(user) {
-      currentUser = user;
-      localStorage.setItem('pt_session', JSON.stringify({ user_id: user.id }));
+    /** Enter the app after successful auth */
+    async function enterApp() {
       authScreen.classList.add('hidden');
       appScreen.classList.remove('hidden');
-      document.getElementById('header-user-name').textContent = user.name;
+      document.getElementById('header-user-name').textContent = currentUser.name;
       switchTab('dashboard');
-      refreshApp();
     }
 
-    /** Create a new user */
-    function createUser() {
+    /** Create a new user — calls server */
+    async function createUser() {
       var name = document.getElementById('new-name').value.trim();
       var pin = document.getElementById('new-pin').value.trim();
       var confirmPin = document.getElementById('confirm-pin').value.trim();
@@ -1009,18 +1050,6 @@
         valid = false;
       }
 
-      // Check duplicate name
-      var users = getData('pt_users');
-      if (users.some(function(u) { return u.name.toLowerCase() === name.toLowerCase(); })) {
-        showError('name-error', 'Name already taken');
-        valid = false;
-      }
-
-      if (users.length >= 5) {
-        showError('name-error', 'Maximum 5 users reached');
-        return;
-      }
-
       if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
         showError('pin-error', 'PIN must be 4 digits');
         valid = false;
@@ -1033,24 +1062,30 @@
 
       if (!valid) return;
 
-      var newUser = {
-        id: genId(),
-        name: name,
-        pin_hash: hashPin(pin),
-        created_at: new Date().toISOString()
-      };
+      try {
+        var result = await api('POST', '/auth/register', { name: name, pin: pin });
 
-      users.push(newUser);
-      setData('pt_users', users);
+        // Auto-login after registration
+        authToken = result.token;
+        currentUser = result.user;
+        localStorage.setItem('pt_token', result.token);
+        localStorage.setItem('pt_user', JSON.stringify(result.user));
 
-      // Switch back to login
-      authCreate.classList.add('hidden');
-      authSelect.classList.remove('hidden');
-      document.getElementById('new-name').value = '';
-      document.getElementById('new-pin').value = '';
-      document.getElementById('confirm-pin').value = '';
-      renderUserList();
-      selectLoginUser(newUser);
+        // Clear form and go back to login view
+        authCreate.classList.add('hidden');
+        authSelect.classList.remove('hidden');
+        document.getElementById('new-name').value = '';
+        document.getElementById('new-pin').value = '';
+        document.getElementById('confirm-pin').value = '';
+
+        await loadUsers();
+        renderUserList();
+
+        // Enter app directly
+        enterApp();
+      } catch (e) {
+        showError('name-error', e.message || 'Failed to create user');
+      }
     }
 
     // ===== ERROR HELPERS =====
@@ -1068,15 +1103,12 @@
 
     // ===== TAB NAVIGATION =====
     function switchTab(tabName) {
-      // Update nav buttons
       document.querySelectorAll('#nav-tabs button').forEach(function(btn) {
         btn.classList.toggle('active', btn.getAttribute('data-tab') === tabName);
       });
-      // Update tab content
       document.querySelectorAll('.tab-content').forEach(function(tc) {
         tc.classList.toggle('active', tc.id === 'tab-' + tabName);
       });
-      // Refresh relevant data
       refreshApp();
     }
 
@@ -1091,8 +1123,9 @@
     }
 
     // ===== REFRESH ALL APP DATA =====
-    function refreshApp() {
+    async function refreshApp() {
       if (!currentUser) return;
+      await Promise.all([loadUsers(), loadRequests(), loadPayments()]);
       refreshDashboard();
       refreshRequests();
       refreshPayTab();
@@ -1103,7 +1136,7 @@
 
     // ===== POPULATE USER DROPDOWNS =====
     function populateUserDropdowns() {
-      var users = getData('pt_users').filter(function(u) { return u.id !== currentUser.id; });
+      var users = cachedUsers.filter(function(u) { return u.id !== currentUser.id; });
       var dropdowns = [document.getElementById('req-user'), document.getElementById('pay-user')];
 
       dropdowns.forEach(function(sel) {
@@ -1121,66 +1154,43 @@
 
     // ===== DASHBOARD =====
     function refreshDashboard() {
-      var requests = getData('pt_requests');
-      var payments = getData('pt_payments');
+      var requests = cachedRequests;
+      var payments = cachedPayments;
       var uid = currentUser.id;
 
-      // Calculate net debts between user pairs.
-      // Accepted requests create debts: to_id owes from_id.
-      // Confirmed payments reduce debts: from_id paid to_id.
+      var owedToMe = 0;
+      var iOwe = 0;
 
-      var owedToMe = 0; // Total others owe to current user
-      var iOwe = 0; // Total current user owes others
-
-      // From accepted requests: from_id is owed by to_id
       requests.forEach(function(r) {
         if (r.status !== 'accepted') return;
-        if (r.from_id === uid) {
-          // I requested from someone, they accepted — they owe me
-          owedToMe += Number(r.amount);
-        }
-        if (r.to_id === uid) {
-          // Someone requested from me, I accepted — I owe them
-          iOwe += Number(r.amount);
-        }
+        if (r.from_id === uid) owedToMe += Number(r.amount);
+        if (r.to_id === uid) iOwe += Number(r.amount);
       });
 
-      // From confirmed payments: from_id paid to_id
       payments.forEach(function(p) {
         if (p.status !== 'confirmed') return;
-        if (p.from_id === uid) {
-          // I paid someone — reduce what I owe
-          iOwe -= Number(p.amount);
-        }
-        if (p.to_id === uid) {
-          // Someone paid me — reduce what they owe me
-          owedToMe -= Number(p.amount);
-        }
+        if (p.from_id === uid) iOwe -= Number(p.amount);
+        if (p.to_id === uid) owedToMe -= Number(p.amount);
       });
 
-      // Clamp to 0 minimum
       owedToMe = Math.max(0, owedToMe);
       iOwe = Math.max(0, iOwe);
 
       document.getElementById('metric-owed-to-me').textContent = formatAmount(owedToMe);
       document.getElementById('metric-i-owe').textContent = formatAmount(iOwe);
 
-      // Pending requests (incoming pending)
       var pendingCount = requests.filter(function(r) {
         return r.to_id === uid && r.status === 'pending';
       }).length;
-      // Also count pending payments awaiting my confirmation
       pendingCount += payments.filter(function(p) {
         return p.to_id === uid && p.status === 'sent';
       }).length;
       document.getElementById('metric-pending').textContent = pendingCount;
 
-      // Latest activity
       var allActivity = getActivityForUser(uid);
       var latestEl = document.getElementById('metric-latest');
       if (allActivity.length > 0) {
-        var latest = allActivity[0];
-        latestEl.textContent = latest.text;
+        latestEl.textContent = allActivity[0].text;
       } else {
         latestEl.textContent = 'No activity yet';
       }
@@ -1188,10 +1198,9 @@
 
     // ===== REQUESTS TAB =====
     function refreshRequests() {
-      var requests = getData('pt_requests');
+      var requests = cachedRequests;
       var uid = currentUser.id;
 
-      // Incoming: requests TO me (I need to accept/reject)
       var incoming = requests.filter(function(r) { return r.to_id === uid; })
         .sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); });
 
@@ -1206,7 +1215,6 @@
         });
       }
 
-      // Outgoing: requests FROM me
       var outgoing = requests.filter(function(r) { return r.from_id === uid; })
         .sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); });
 
@@ -1246,7 +1254,6 @@
 
       var actionsDiv = li.querySelector('#actions-' + req.id);
 
-      // Incoming pending: show Accept / Reject
       if (direction === 'incoming' && req.status === 'pending') {
         var acceptBtn = document.createElement('button');
         acceptBtn.className = 'btn-sm btn-navy';
@@ -1262,7 +1269,6 @@
         actionsDiv.appendChild(rejectBtn);
       }
 
-      // Chat toggle
       var chatToggle = document.createElement('button');
       chatToggle.className = 'chat-toggle';
       chatToggle.textContent = '[ Messages ]';
@@ -1274,20 +1280,18 @@
       return li;
     }
 
-    /** Handle accepting or rejecting a request */
-    function handleRequest(reqId, newStatus) {
-      var requests = getData('pt_requests');
-      var idx = requests.findIndex(function(r) { return r.id === reqId; });
-      if (idx === -1) return;
-
-      requests[idx].status = newStatus;
-      requests[idx].resolved_at = new Date().toISOString();
-      setData('pt_requests', requests);
-      refreshApp();
+    /** Handle accepting or rejecting a request — calls server */
+    async function handleRequest(reqId, newStatus) {
+      try {
+        await api('PATCH', '/requests/' + reqId, { status: newStatus });
+        await refreshApp();
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
     }
 
-    /** Send a new money request */
-    function sendRequest() {
+    /** Send a new money request — calls server */
+    async function sendRequest() {
       var toId = document.getElementById('req-user').value;
       var amount = document.getElementById('req-amount').value;
       var reason = document.getElementById('req-reason').value.trim();
@@ -1309,37 +1313,25 @@
 
       if (!valid) return;
 
-      var requests = getData('pt_requests');
-      var newReq = {
-        id: genId(),
-        from_id: currentUser.id,
-        to_id: toId,
-        amount: amountNum,
-        reason: reason,
-        status: 'pending',
-        created_at: new Date().toISOString(),
-        resolved_at: null
-      };
+      try {
+        await api('POST', '/requests', { toId: toId, amount: amountNum, reason: reason });
 
-      requests.push(newReq);
-      setData('pt_requests', requests);
+        document.getElementById('req-user').value = '';
+        document.getElementById('req-amount').value = '';
+        document.getElementById('req-reason').value = '';
 
-      // Clear form
-      document.getElementById('req-user').value = '';
-      document.getElementById('req-amount').value = '';
-      document.getElementById('req-reason').value = '';
-
-      // Switch to outgoing tab
-      switchSubTab('outgoing');
-      refreshApp();
+        switchSubTab('outgoing');
+        await refreshApp();
+      } catch (e) {
+        showError('req-error', e.message || 'Failed to send request');
+      }
     }
 
     // ===== PAY TAB =====
     function refreshPayTab() {
-      var payments = getData('pt_payments');
+      var payments = cachedPayments;
       var uid = currentUser.id;
 
-      // Show pending payments awaiting my confirmation (I'm the recipient)
       var pending = payments.filter(function(p) {
         return p.to_id === uid && p.status === 'sent';
       }).sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); });
@@ -1392,7 +1384,6 @@
         actionsDiv.appendChild(disputeBtn);
       }
 
-      // Chat toggle
       var chatToggle = document.createElement('button');
       chatToggle.className = 'chat-toggle';
       chatToggle.textContent = '[ Messages ]';
@@ -1404,20 +1395,18 @@
       return li;
     }
 
-    /** Handle confirming or disputing a payment */
-    function handlePayment(payId, newStatus) {
-      var payments = getData('pt_payments');
-      var idx = payments.findIndex(function(p) { return p.id === payId; });
-      if (idx === -1) return;
-
-      payments[idx].status = newStatus;
-      payments[idx].resolved_at = new Date().toISOString();
-      setData('pt_payments', payments);
-      refreshApp();
+    /** Handle confirming or disputing a payment — calls server */
+    async function handlePayment(payId, newStatus) {
+      try {
+        await api('PATCH', '/payments/' + payId, { status: newStatus });
+        await refreshApp();
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
     }
 
-    /** Send a new payment */
-    function sendPayment() {
+    /** Send a new payment — calls server */
+    async function sendPayment() {
       var toId = document.getElementById('pay-user').value;
       var amount = document.getElementById('pay-amount').value;
       var message = document.getElementById('pay-message').value.trim();
@@ -1439,41 +1428,17 @@
 
       if (!valid) return;
 
-      var payments = getData('pt_payments');
-      var newPay = {
-        id: genId(),
-        from_id: currentUser.id,
-        to_id: toId,
-        amount: amountNum,
-        message: message,
-        status: 'sent',
-        created_at: new Date().toISOString(),
-        resolved_at: null
-      };
+      try {
+        await api('POST', '/payments', { toId: toId, amount: amountNum, message: message });
 
-      payments.push(newPay);
-      setData('pt_payments', payments);
+        document.getElementById('pay-user').value = '';
+        document.getElementById('pay-amount').value = '';
+        document.getElementById('pay-message').value = '';
 
-      // If there's a message, auto-create a chat message
-      if (message) {
-        var messages = getData('pt_messages');
-        messages.push({
-          id: genId(),
-          ref_type: 'payment',
-          ref_id: newPay.id,
-          user_id: currentUser.id,
-          text: message,
-          timestamp: new Date().toISOString()
-        });
-        setData('pt_messages', messages);
+        await refreshApp();
+      } catch (e) {
+        showError('pay-error', e.message || 'Failed to send payment');
       }
-
-      // Clear form
-      document.getElementById('pay-user').value = '';
-      document.getElementById('pay-amount').value = '';
-      document.getElementById('pay-message').value = '';
-
-      refreshApp();
     }
 
     // ===== CHAT / MESSAGES =====
@@ -1487,11 +1452,14 @@
       renderChat(refId, refType, container);
     }
 
-    /** Render chat messages for a request or payment */
-    function renderChat(refId, refType, container) {
-      var messages = getData('pt_messages').filter(function(m) {
-        return m.ref_id === refId && m.ref_type === refType;
-      }).sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    /** Render chat messages for a request or payment — fetches from server */
+    async function renderChat(refId, refType, container) {
+      var messages = [];
+      try {
+        messages = await api('GET', '/messages?refType=' + refType + '&refId=' + refId);
+      } catch (e) {
+        messages = [];
+      }
 
       var chatHtml =
         '<div class="chat-box">' +
@@ -1520,11 +1488,9 @@
 
       container.innerHTML = chatHtml;
 
-      // Scroll to bottom of messages
       var msgsDiv = container.querySelector('#chat-msgs-' + refId);
       msgsDiv.scrollTop = msgsDiv.scrollHeight;
 
-      // Add event listeners
       var sendBtn = container.querySelector('#chat-send-' + refId);
       var input = container.querySelector('#chat-input-' + refId);
 
@@ -1539,24 +1505,17 @@
       });
     }
 
-    /** Send a chat message */
-    function sendChatMessage(refId, refType, inputEl, container) {
+    /** Send a chat message — calls server */
+    async function sendChatMessage(refId, refType, inputEl, container) {
       var text = inputEl.value.trim();
       if (!text) return;
 
-      var messages = getData('pt_messages');
-      messages.push({
-        id: genId(),
-        ref_type: refType,
-        ref_id: refId,
-        user_id: currentUser.id,
-        text: text,
-        timestamp: new Date().toISOString()
-      });
-      setData('pt_messages', messages);
-
-      // Re-render chat
-      renderChat(refId, refType, container);
+      try {
+        await api('POST', '/messages', { refType: refType, refId: refId, text: text });
+        await renderChat(refId, refType, container);
+      } catch (e) {
+        alert('Error sending message: ' + e.message);
+      }
     }
 
     // ===== HISTORY TAB =====
@@ -1585,8 +1544,8 @@
 
     /** Get all activity (requests + payments) for a user, sorted by time desc */
     function getActivityForUser(uid) {
-      var requests = getData('pt_requests');
-      var payments = getData('pt_payments');
+      var requests = cachedRequests;
+      var payments = cachedPayments;
       var activity = [];
 
       requests.forEach(function(r) {
@@ -1618,7 +1577,7 @@
 
     // ===== SETTINGS =====
     function refreshSettings() {
-      var users = getData('pt_users');
+      var users = cachedUsers;
       var list = document.getElementById('settings-user-list');
       list.innerHTML = '';
       users.forEach(function(u) {
@@ -1629,15 +1588,15 @@
       });
     }
 
-    /** Change the current user's PIN */
-    function changePin() {
+    /** Change the current user's PIN — calls server */
+    async function changePin() {
       var oldPin = document.getElementById('settings-old-pin').value.trim();
       var newPin = document.getElementById('settings-new-pin').value.trim();
 
       hideError('settings-pin-error');
 
-      if (hashPin(oldPin) !== currentUser.pin_hash) {
-        showError('settings-pin-error', 'Current PIN is incorrect');
+      if (!oldPin || oldPin.length !== 4 || !/^\d{4}$/.test(oldPin)) {
+        showError('settings-pin-error', 'Current PIN must be 4 digits');
         return;
       }
 
@@ -1646,32 +1605,23 @@
         return;
       }
 
-      var users = getData('pt_users');
-      var idx = users.findIndex(function(u) { return u.id === currentUser.id; });
-      if (idx === -1) return;
-
-      users[idx].pin_hash = hashPin(newPin);
-      setData('pt_users', users);
-      currentUser.pin_hash = users[idx].pin_hash;
-
-      document.getElementById('settings-old-pin').value = '';
-      document.getElementById('settings-new-pin').value = '';
-      showError('settings-pin-error', 'PIN updated successfully');
+      try {
+        await api('PATCH', '/users/pin', { oldPin: oldPin, newPin: newPin });
+        document.getElementById('settings-old-pin').value = '';
+        document.getElementById('settings-new-pin').value = '';
+        showError('settings-pin-error', 'PIN updated successfully');
+      } catch (e) {
+        showError('settings-pin-error', e.message || 'Failed to update PIN');
+      }
     }
 
-    /** Reset all application data */
+    /** Reset all data removed — not applicable in multi-user server mode */
     function resetAllData() {
-      if (!confirm('Are you sure you want to reset ALL data? This cannot be undone.')) return;
-      localStorage.removeItem('pt_users');
-      localStorage.removeItem('pt_requests');
-      localStorage.removeItem('pt_payments');
-      localStorage.removeItem('pt_messages');
-      localStorage.removeItem('pt_session');
+      if (!confirm('This will log you out. Are you sure?')) return;
       showAuth();
     }
 
     // ===== XSS PROTECTION =====
-    /** Escape HTML to prevent XSS attacks */
     function escapeHtml(str) {
       if (!str) return '';
       var div = document.createElement('div');
@@ -1681,7 +1631,6 @@
 
     // ===== EVENT LISTENERS =====
     function setupEventListeners() {
-      // Auth: create user toggle
       document.getElementById('btn-create-user').addEventListener('click', function() {
         authSelect.classList.add('hidden');
         authCreate.classList.remove('hidden');
@@ -1696,45 +1645,33 @@
         hideError('confirm-error');
       });
 
-      // Auth: login
       document.getElementById('btn-login').addEventListener('click', attemptLogin);
       document.getElementById('login-pin').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') attemptLogin();
       });
 
-      // Auth: save new user
       document.getElementById('btn-save-user').addEventListener('click', createUser);
       document.getElementById('confirm-pin').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') createUser();
       });
 
-      // Logout
-      document.getElementById('btn-logout').addEventListener('click', showAuth);
+      document.getElementById('btn-logout').addEventListener('click', function() { showAuth(); });
 
-      // Tab navigation
       document.querySelectorAll('#nav-tabs button').forEach(function(btn) {
         btn.addEventListener('click', function() {
           switchTab(btn.getAttribute('data-tab'));
         });
       });
 
-      // Sub-tab navigation (Requests)
       document.querySelectorAll('.sub-tabs button').forEach(function(btn) {
         btn.addEventListener('click', function() {
           switchSubTab(btn.getAttribute('data-subtab'));
         });
       });
 
-      // Send request
       document.getElementById('btn-send-request').addEventListener('click', sendRequest);
-
-      // Send payment
       document.getElementById('btn-send-payment').addEventListener('click', sendPayment);
-
-      // Settings: change PIN
       document.getElementById('btn-change-pin').addEventListener('click', changePin);
-
-      // Settings: reset data
       document.getElementById('btn-reset-data').addEventListener('click', resetAllData);
     }
 
