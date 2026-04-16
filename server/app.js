@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
+const config = require('./config');
 
 // Initialize database (creates tables on first run)
 const db = require('./db');
@@ -17,17 +18,19 @@ const settlementRoutes = require('./routes/settlements');
 const reportRoutes = require('./routes/reports');
 const attachmentRoutes = require('./routes/attachments');
 const {
+  securityHeaders,
   requestLogger,
   apiNotFoundHandler,
   errorHandler
 } = require('./middleware/observability');
 
 const app = express();
-const slowRequestMs = Number.parseInt(process.env.SLOW_REQUEST_MS || '1000', 10);
+app.set('trust proxy', config.trustProxy);
 
 // Middleware
-app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '10mb' }));
-app.use(requestLogger({ slowRequestMs }));
+app.use(express.json({ limit: config.jsonBodyLimit }));
+app.use(securityHeaders);
+app.use(requestLogger({ slowRequestMs: config.slowRequestMs }));
 
 // Health check endpoint for monitors and uptime checks
 app.get('/api/health', (req, res) => {
@@ -49,22 +52,19 @@ app.get('/api/health', (req, res) => {
   }
 });
 
-// Global rate limiter: 100 requests per minute per IP
-const disableRateLimit = process.env.NODE_ENV === 'test' || process.env.DISABLE_RATE_LIMIT === 'true';
-if (!disableRateLimit) {
+if (config.rateLimit.enabled) {
   const globalLimiter = rateLimit({
-    windowMs: 60 * 1000,
-    max: 100,
+    windowMs: config.rateLimit.windowMs,
+    max: config.rateLimit.globalMax,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests, please try again later' }
   });
   app.use('/api', globalLimiter);
 
-  // Stricter rate limiter for auth endpoints (login/register): 10 per minute
   const authLimiter = rateLimit({
-    windowMs: 60 * 1000,
-    max: 10,
+    windowMs: config.rateLimit.windowMs,
+    max: config.rateLimit.authMax,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many login attempts, please try again later' }

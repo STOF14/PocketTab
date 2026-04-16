@@ -1,11 +1,12 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const db = require('../db');
+const config = require('../config');
 const { isParentOrAdmin } = require('../services/roles');
 
 const DEV_FALLBACK_SECRET = 'pockettab-dev-secret-change-in-production';
-const isProduction = process.env.NODE_ENV === 'production';
-const SESSION_TTL_DAYS = Number.parseInt(process.env.SESSION_TTL_DAYS || '7', 10);
+const isProduction = config.isProduction;
+const SESSION_TTL_DAYS = config.sessionTtlDays;
 
 if (isProduction && !process.env.JWT_SECRET) {
   throw new Error('JWT_SECRET is required when NODE_ENV=production');
@@ -62,7 +63,9 @@ function revokeAllSessionsForUser(userId) {
 
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  const token = typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+    ? authHeader.slice(7).trim()
+    : null;
 
   if (!token) {
     return res.status(401).json({ error: 'Authentication required' });

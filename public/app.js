@@ -22,6 +22,46 @@
 
     // ===== API HELPER =====
     var authToken = localStorage.getItem('pt_token') || null;
+    var requestTimeoutMs = 10000;
+    var maxSafeRetries = 2;
+    var connectivityBanner = document.getElementById('connectivity-banner');
+
+    function wait(ms) {
+      return new Promise(function(resolve) { setTimeout(resolve, ms); });
+    }
+
+    function setConnectivityState(state, message) {
+      if (!connectivityBanner) return;
+      if (!state || !message) {
+        connectivityBanner.className = 'connectivity-banner hidden';
+        connectivityBanner.textContent = '';
+        return;
+      }
+
+      connectivityBanner.className = 'connectivity-banner ' + state;
+      connectivityBanner.textContent = message;
+    }
+
+    function updateConnectivityFromNavigator() {
+      if (navigator.onLine) {
+        setConnectivityState('online', 'Connected');
+        setTimeout(function() {
+          setConnectivityState(null, null);
+        }, 1200);
+      } else {
+        setConnectivityState('offline', 'Offline: waiting for connection...');
+      }
+    }
+
+    async function fetchWithTimeout(url, opts) {
+      var controller = new AbortController();
+      var timeout = setTimeout(function() { controller.abort(); }, requestTimeoutMs);
+      try {
+        return await fetch(url, Object.assign({}, opts, { signal: controller.signal }));
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
 
     async function api(method, path, body) {
       var opts = {
@@ -34,12 +74,42 @@
       if (body) {
         opts.body = JSON.stringify(body);
       }
-      var res = await fetch('/api' + path, opts);
-      var data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'API error');
+      var canRetry = method === 'GET';
+      var lastError = null;
+      var attempts = canRetry ? (maxSafeRetries + 1) : 1;
+
+      for (var attempt = 0; attempt < attempts; attempt += 1) {
+        try {
+          var res = await fetchWithTimeout('/api' + path, opts);
+          var data = null;
+          var text = await res.text();
+          if (text) data = JSON.parse(text);
+
+          if (!res.ok) {
+            throw new Error((data && data.error) || 'API error');
+          }
+
+          if (navigator.onLine) {
+            setConnectivityState(null, null);
+          }
+          return data;
+        } catch (err) {
+          lastError = err;
+          var isTimeout = err && err.name === 'AbortError';
+          var networkIssue = isTimeout || (err instanceof TypeError);
+          if (networkIssue) {
+            setConnectivityState('offline', isTimeout ? 'Network timeout: retrying...' : 'Offline: retrying...');
+          }
+
+          if (!(canRetry && networkIssue && attempt < attempts - 1)) {
+            break;
+          }
+
+          await wait(300 * (attempt + 1));
+        }
       }
-      return data;
+
+      throw new Error((lastError && lastError.message) || 'Unable to reach server');
     }
 
     // ===== CACHES (loaded from server) =====
@@ -111,6 +181,7 @@
     // ===== INITIALIZATION =====
     async function init() {
       setupEventListeners();
+      updateConnectivityFromNavigator();
       await loadUsers();
 
       // Check for existing session token
@@ -835,6 +906,14 @@
 
     // ===== EVENT LISTENERS =====
     function setupEventListeners() {
+      window.addEventListener('online', function() {
+        updateConnectivityFromNavigator();
+        if (currentUser) {
+          refreshApp();
+        }
+      });
+      window.addEventListener('offline', updateConnectivityFromNavigator);
+
       document.getElementById('btn-create-user').addEventListener('click', function() {
         authSelect.classList.add('hidden');
         authCreate.classList.remove('hidden');

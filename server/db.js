@@ -1,12 +1,17 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 
+if (process.env.NODE_ENV === 'production' && !process.env.DB_PATH) {
+  throw new Error('DB_PATH is required when NODE_ENV=production to ensure durable storage configuration');
+}
+
 const dbPath = process.env.DB_PATH || path.join(__dirname, '..', 'pockettab.db');
 const db = new Database(dbPath);
 
 // Enable WAL mode for better concurrent read performance
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+db.pragma('busy_timeout = 5000');
 
 // Create tables
 db.exec(`
