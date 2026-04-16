@@ -11,7 +11,7 @@
     "backup:db:daily": "DB_BACKUP_KEEP=30 node scripts/backup-db.js",
     "restore:db": "node scripts/restore-db.js",
     "verify:backups": "node scripts/check-backups.js",
-    "smoke:staging": "node scripts/smoke-test.js",
+    "smoke:staging": "node scripts/smoke-check.js",
     "monitor:health": "node scripts/monitor-health.js"
   },
   "repository": {
