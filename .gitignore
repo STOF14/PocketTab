@@ -2,3 +2,5 @@ node_modules/
 pockettab.db
 pockettab.db-shm
 pockettab.db-wal
+backups/
+uploads/

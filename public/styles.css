@@ -1,0 +1,585 @@
+    /* ===== RESET & BASE ===== */
+    *, *::before, *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --navy: #0A0A0A;
+      --navy-dark: #050505;
+      --white: #FFFFFF;
+      --border: 2px solid var(--navy);
+      --font: 'Space Mono', monospace;
+      --pad: 16px;
+      --pad-sm: 12px;
+    }
+
+    html, body {
+      font-family: var(--font);
+      color: var(--navy);
+      background: var(--white);
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    /* ===== UTILITY ===== */
+    .hidden { display: none !important; }
+
+    /* ===== AUTH SCREEN ===== */
+    #auth-screen {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: var(--pad);
+    }
+
+    .auth-box {
+      width: 100%;
+      max-width: 360px;
+      border: var(--border);
+      padding: var(--pad);
+    }
+
+    .auth-box h1 {
+      font-size: 24px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      margin-bottom: var(--pad);
+      text-align: center;
+    }
+
+    .auth-box h2 {
+      font-size: 14px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: var(--pad);
+    }
+
+    /* ===== FORM ELEMENTS ===== */
+    label {
+      display: block;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      border: var(--border);
+      background: var(--white);
+      font-family: var(--font);
+      font-size: 14px;
+      padding: var(--pad-sm);
+      border-radius: 0;
+      outline: none;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: 4px solid var(--navy);
+      outline-offset: -4px;
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 60px;
+    }
+
+    .form-group {
+      margin-bottom: var(--pad);
+    }
+
+    .error-msg {
+      font-size: 12px;
+      color: var(--navy);
+      font-weight: 700;
+      margin-top: 4px;
+      text-transform: uppercase;
+    }
+
+    /* ===== BUTTONS ===== */
+    button, .btn {
+      font-family: var(--font);
+      font-size: 14px;
+      color: var(--navy);
+      background: var(--white);
+      border: var(--border);
+      border-radius: 0;
+      padding: var(--pad-sm) var(--pad);
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: 700;
+      min-height: 44px;
+      transition: none;
+    }
+
+    button:hover {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    button:active {
+      background: var(--navy-dark);
+      color: var(--white);
+    }
+
+    button.btn-full {
+      width: 100%;
+    }
+
+    button.btn-sm {
+      font-size: 12px;
+      padding: 8px var(--pad-sm);
+      min-height: 36px;
+    }
+
+    button.btn-navy {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    button.btn-navy:hover {
+      background: var(--white);
+      color: var(--navy);
+    }
+
+    /* ===== USER LIST (auth) ===== */
+    .user-list {
+      list-style: none;
+      margin-bottom: var(--pad);
+    }
+
+    .user-list li {
+      border: var(--border);
+      padding: var(--pad-sm);
+      margin-bottom: -2px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 44px;
+    }
+
+    .user-list li:hover {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    .user-list li.selected {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    /* ===== APP LAYOUT ===== */
+    #app-screen {
+      min-height: 100vh;
+    }
+
+    /* Header */
+    .app-header {
+      background: var(--navy);
+      color: var(--white);
+      border-bottom: var(--border);
+      padding: var(--pad-sm) var(--pad);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 56px;
+    }
+
+    .app-header .logo {
+      font-size: 18px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    .app-header .user-info {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      display: flex;
+      align-items: center;
+      gap: var(--pad-sm);
+    }
+
+    .app-header button {
+      color: var(--white);
+      background: transparent;
+      border: 2px solid var(--white);
+      font-size: 12px;
+      padding: 6px var(--pad-sm);
+      min-height: 36px;
+    }
+
+    .app-header button:hover {
+      background: var(--white);
+      color: var(--navy);
+    }
+
+    /* Navigation tabs */
+    .nav-tabs {
+      display: flex;
+      border-bottom: var(--border);
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .nav-tabs button {
+      flex: 1;
+      min-width: max-content;
+      border: none;
+      border-right: var(--border);
+      padding: var(--pad-sm) var(--pad);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      background: var(--white);
+      color: var(--navy);
+      min-height: 44px;
+      white-space: nowrap;
+    }
+
+    .nav-tabs button:last-child {
+      border-right: none;
+    }
+
+    .nav-tabs button:hover {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    .nav-tabs button.active {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    /* Main content */
+    .app-main {
+      padding: var(--pad);
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: var(--pad);
+      padding-bottom: 8px;
+      border-bottom: var(--border);
+    }
+
+    /* ===== METRIC CARDS (Dashboard) ===== */
+    .metric-cards {
+      display: grid;
+      gap: var(--pad);
+    }
+
+    .metric-card {
+      border: var(--border);
+      padding: var(--pad);
+      background: var(--white);
+    }
+
+    .metric-card .metric-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+
+    .metric-card .metric-value {
+      font-size: 32px;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    /* ===== STATUS BADGES ===== */
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      border: var(--border);
+      padding: 2px 8px;
+      background: var(--white);
+      color: var(--navy);
+      white-space: nowrap;
+    }
+
+    /* ===== REQUEST / PAYMENT ROWS ===== */
+    .item-list {
+      list-style: none;
+    }
+
+    .item-row {
+      border: var(--border);
+      padding: var(--pad);
+      margin-bottom: -2px;
+    }
+
+    .item-row .item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: var(--pad-sm);
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    .item-row .item-desc {
+      font-size: 14px;
+      font-weight: 700;
+      flex: 1;
+    }
+
+    .item-row .item-amount {
+      font-size: 18px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .item-row .item-meta {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+
+    .item-row .item-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .item-row .item-actions button {
+      font-size: 12px;
+      padding: 6px var(--pad-sm);
+      min-height: 36px;
+    }
+
+    /* ===== ACTIVITY LOG ===== */
+    .activity-list {
+      list-style: none;
+      counter-reset: activity;
+    }
+
+    .activity-item {
+      border: var(--border);
+      padding: var(--pad-sm) var(--pad);
+      margin-bottom: -2px;
+      display: flex;
+      align-items: center;
+      gap: var(--pad-sm);
+      flex-wrap: wrap;
+    }
+
+    .activity-item::before {
+      counter-increment: activity;
+      content: counter(activity, decimal-leading-zero) ".";
+      font-weight: 700;
+      font-size: 14px;
+      min-width: 32px;
+    }
+
+    .activity-item .activity-text {
+      flex: 1;
+      font-size: 13px;
+    }
+
+    .activity-item .activity-time {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      white-space: nowrap;
+    }
+
+    /* ===== CHAT / MESSAGES ===== */
+    .chat-toggle {
+      font-size: 12px;
+      text-transform: uppercase;
+      cursor: pointer;
+      border: none;
+      background: none;
+      color: var(--navy);
+      font-family: var(--font);
+      font-weight: 700;
+      letter-spacing: 1px;
+      padding: 4px 0;
+      min-height: auto;
+    }
+
+    .chat-toggle:hover {
+      background: none;
+      text-decoration: underline;
+      color: var(--navy);
+    }
+
+    .chat-box {
+      border: var(--border);
+      border-top: none;
+      margin-top: -2px;
+      margin-bottom: -2px;
+    }
+
+    .chat-messages {
+      max-height: 200px;
+      overflow-y: auto;
+      padding: var(--pad-sm);
+    }
+
+    .chat-msg {
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+
+    .chat-msg .chat-author {
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .chat-msg .chat-time {
+      font-size: 10px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .chat-input-row {
+      display: flex;
+      border-top: var(--border);
+    }
+
+    .chat-input-row input {
+      border: none;
+      flex: 1;
+      font-size: 12px;
+    }
+
+    .chat-input-row input:focus {
+      outline: 2px solid var(--navy);
+      outline-offset: -2px;
+    }
+
+    .chat-input-row button {
+      border: none;
+      border-left: var(--border);
+      min-width: 60px;
+      font-size: 12px;
+      min-height: 40px;
+    }
+
+    /* ===== SETTINGS ===== */
+    .settings-section {
+      border: var(--border);
+      padding: var(--pad);
+      margin-bottom: var(--pad);
+    }
+
+    .settings-section h3 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: var(--pad-sm);
+    }
+
+    /* ===== TABS CONTENT ===== */
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ===== EMPTY STATE ===== */
+    .empty-state {
+      border: var(--border);
+      padding: var(--pad);
+      text-align: center;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    /* ===== RESPONSIVE: DESKTOP ===== */
+    @media (min-width: 768px) {
+      .metric-cards {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .app-layout {
+        display: grid;
+        grid-template-columns: 200px 1fr;
+      }
+
+      .nav-tabs {
+        flex-direction: column;
+        border-bottom: none;
+        border-right: var(--border);
+        min-height: calc(100vh - 56px);
+      }
+
+      .nav-tabs button {
+        border-right: none;
+        border-bottom: var(--border);
+        text-align: left;
+      }
+
+      .nav-tabs button:last-child {
+        border-bottom: var(--border);
+      }
+
+      .item-row .item-actions button {
+        width: auto;
+      }
+    }
+
+    /* ===== RESPONSIVE: MOBILE ===== */
+    @media (max-width: 767px) {
+      .item-row .item-actions button {
+        flex: 1;
+        min-width: 80px;
+      }
+
+      button.btn-full-mobile {
+        width: 100%;
+      }
+
+      .app-header .logo {
+        font-size: 14px;
+      }
+    }
+
+    /* Sub-tabs for Requests section */
+    .sub-tabs {
+      display: flex;
+      margin-bottom: var(--pad);
+    }
+
+    .sub-tabs button {
+      flex: 1;
+      border: var(--border);
+      border-right: none;
+      font-size: 12px;
+      padding: 8px;
+      min-height: 40px;
+    }
+
+    .sub-tabs button:last-child {
+      border-right: var(--border);
+    }
+
+    .sub-tabs button.active {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    /* Pay form layout */
+    .pay-form {
+      max-width: 480px;
+    }
