@@ -25,10 +25,10 @@ db.exec(`
     id TEXT PRIMARY KEY,
     household_id TEXT NOT NULL REFERENCES households(id),
     code TEXT NOT NULL UNIQUE,
-    created_by TEXT NOT NULL REFERENCES users(id),
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at TEXT NOT NULL,
     used_at TEXT,
-    used_by TEXT REFERENCES users(id),
+    used_by TEXT REFERENCES users(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL
   );
 

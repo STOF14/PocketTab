@@ -16,6 +16,7 @@ const router = express.Router();
 router.use(authenticateToken);
 
 const VALID_ROLES = new Set(['admin', 'parent', 'child']);
+const MAX_HOUSEHOLD_RESET_USERS = 5000;
 
 // GET /api/users/me — current authenticated profile
 router.get('/me', (req, res) => {
@@ -215,9 +216,13 @@ router.delete('/reset-all', requireParentOrAdmin, (req, res) => {
   if (householdUserIds.length === 0) {
     return res.status(400).json({ error: 'No household members found to reset' });
   }
+  if (householdUserIds.length > MAX_HOUSEHOLD_RESET_USERS) {
+    return res.status(400).json({ error: `Household reset limit exceeded (${MAX_HOUSEHOLD_RESET_USERS} users)` });
+  }
   const placeholders = householdUserIds.map(() => '?').join(', ');
 
   const wipeAll = db.transaction(() => {
+    db.prepare('DELETE FROM household_invites WHERE household_id = ?').run(req.householdId);
     db.prepare(`DELETE FROM attachments WHERE user_id IN (${placeholders})`).run(...householdUserIds);
     db.prepare(`DELETE FROM pin_reset_requests WHERE user_id IN (${placeholders}) OR requested_by IN (${placeholders}) OR resolved_by IN (${placeholders})`)
       .run(...householdUserIds, ...householdUserIds, ...householdUserIds);

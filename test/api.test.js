@@ -400,7 +400,8 @@ test('multi-family isolation with household invites', async () => {
     .set(auth(familyAAdmin.token));
   assert.equal(familyAMembers.status, 200);
   assert.equal(familyAMembers.body.length, 2);
-  assert.ok(familyAMembers.body.every((member) => [familyAAdmin.user.id, familyAChild.body.user.id].includes(member.id)));
+  const expectedFamilyAIds = [familyAAdmin.user.id, familyAChild.body.user.id];
+  assert.ok(familyAMembers.body.every((member) => expectedFamilyAIds.includes(member.id)));
 
   const reset = await request(app)
     .delete('/api/users/reset-all')

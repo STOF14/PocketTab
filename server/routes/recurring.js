@@ -81,7 +81,7 @@ router.post('/', requireParentOrAdmin, (req, res) => {
   if (!fromUser || !toUser) {
     return res.status(404).json({ error: 'fromId or toId user not found' });
   }
-  if (fromUser.household_id !== req.householdId || toUser.household_id !== req.householdId || fromUser.household_id !== toUser.household_id) {
+  if (fromUser.household_id !== req.householdId || toUser.household_id !== req.householdId) {
     return res.status(403).json({ error: 'Recurring rules must stay within your household' });
   }
 

@@ -14,7 +14,7 @@ function buildScopeWhere(alias, req, params) {
   const scope = req.query.scope || 'mine';
   const canSeeHousehold = req.userRole === 'admin' || req.userRole === 'parent';
   params.push(req.householdId);
-  let sql = ` AND EXISTS (SELECT 1 FROM users hu WHERE hu.id = ${alias}.from_id AND hu.household_id = ?)`;
+  let sql = ` AND EXISTS (SELECT 1 FROM users household_user WHERE household_user.id = ${alias}.from_id AND household_user.household_id = ?)`;
 
   if (scope === 'household' && canSeeHousehold) {
     return sql;
