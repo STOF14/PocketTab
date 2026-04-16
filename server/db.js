@@ -1,17 +1,40 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 
+if (process.env.NODE_ENV === 'production' && !process.env.DB_PATH) {
+  throw new Error('DB_PATH is required when NODE_ENV=production to ensure durable storage configuration');
+}
+
 const dbPath = process.env.DB_PATH || path.join(__dirname, '..', 'pockettab.db');
 const db = new Database(dbPath);
 
 // Enable WAL mode for better concurrent read performance
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+db.pragma('busy_timeout = 5000');
 
 // Create tables
 db.exec(`
+  CREATE TABLE IF NOT EXISTS households (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS household_invites (
+    id TEXT PRIMARY KEY,
+    household_id TEXT NOT NULL REFERENCES households(id),
+    code TEXT NOT NULL UNIQUE,
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    used_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
+    household_id TEXT REFERENCES households(id),
     name TEXT NOT NULL UNIQUE COLLATE NOCASE,
     pin_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'child',
@@ -154,6 +177,7 @@ function ensureColumn(table, definition) {
 }
 
 function ensureBaseMigrations() {
+  ensureColumn('users', 'household_id TEXT');
   ensureColumn('users', "role TEXT NOT NULL DEFAULT 'child'");
   ensureColumn('users', 'failed_login_attempts INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'locked_until TEXT');
@@ -171,6 +195,18 @@ function ensureBaseMigrations() {
   ensureColumn('payments', 'request_id TEXT');
   ensureColumn('payments', 'category TEXT');
   ensureColumn('payments', 'tags_json TEXT');
+
+  const householdCount = db.prepare('SELECT COUNT(*) AS total FROM households').get().total;
+  if (householdCount === 0) {
+    const createdAt = new Date().toISOString();
+    db.prepare('INSERT INTO households (id, name, created_at) VALUES (?, ?, ?)').run(
+      'default-household',
+      'Default household',
+      createdAt
+    );
+  }
+
+  db.exec("UPDATE users SET household_id = 'default-household' WHERE household_id IS NULL OR TRIM(household_id) = ''");
 
   db.exec("UPDATE users SET role = 'child' WHERE role IS NULL OR TRIM(role) = ''");
   db.exec('UPDATE users SET failed_login_attempts = 0 WHERE failed_login_attempts IS NULL');
@@ -200,5 +236,7 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications
 db.exec('CREATE INDEX IF NOT EXISTS idx_recurring_next_run ON recurring_requests(active, next_run_at)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_allowances_child_active ON allowances(child_id, active)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_attachments_ref ON attachments(ref_type, ref_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_users_household ON users(household_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_household_invites_lookup ON household_invites(code, household_id, used_at, expires_at)');
 
 module.exports = db;

@@ -1,8 +1,9 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const db = require('../db');
-const { authenticateToken, issueSessionToken, revokeSession } = require('../middleware/auth');
+const { authenticateToken, requireParentOrAdmin, issueSessionToken, revokeSession } = require('../middleware/auth');
 const crypto = require('crypto');
+const { consumeInvite, createHousehold, createInvite, getUserHousehold } = require('../services/households');
 
 const router = express.Router();
 const MAX_LOGIN_ATTEMPTS = Number.parseInt(process.env.PIN_MAX_ATTEMPTS || '5', 10);
@@ -10,13 +11,25 @@ const LOCK_MINUTES = Number.parseInt(process.env.PIN_LOCK_MINUTES || '15', 10);
 
 // GET /api/auth/users — List all users (public, for login screen)
 router.get('/users', (req, res) => {
-  const users = db.prepare('SELECT id, name, role, created_at FROM users ORDER BY created_at ASC').all();
+  let users = [];
+  if (req.query.inviteCode) {
+    const invite = db.prepare('SELECT household_id FROM household_invites WHERE code = ?').get(String(req.query.inviteCode).trim());
+    users = invite
+      ? db.prepare('SELECT id, household_id, name, role, created_at FROM users WHERE household_id = ? ORDER BY created_at ASC').all(invite.household_id)
+      : [];
+  } else if (req.query.householdId) {
+    users = db.prepare(
+      'SELECT id, household_id, name, role, created_at FROM users WHERE household_id = ? ORDER BY created_at ASC'
+    ).all(String(req.query.householdId));
+  } else {
+    users = db.prepare('SELECT id, household_id, name, role, created_at FROM users ORDER BY created_at ASC').all();
+  }
   res.json(users);
 });
 
 // POST /api/auth/register — Create a new user
 router.post('/register', (req, res) => {
-  const { name, pin } = req.body;
+  const { name, pin, inviteCode, createHousehold: shouldCreateHousehold, householdName } = req.body;
 
   if (!name || typeof name !== 'string' || name.trim().length < 1) {
     return res.status(400).json({ error: 'Name is required' });
@@ -34,18 +47,46 @@ router.post('/register', (req, res) => {
     return res.status(400).json({ error: 'Name already taken' });
   }
 
+  const createdAt = new Date().toISOString();
+  let householdId = null;
+  let inviteResolution = null;
+
+  if (inviteCode) {
+    const inviteRow = db.prepare('SELECT household_id FROM household_invites WHERE code = ?').get(String(inviteCode).trim());
+    if (!inviteRow) {
+      return res.status(400).json({ error: 'Invalid invite code' });
+    }
+    householdId = inviteRow.household_id;
+  } else if (shouldCreateHousehold) {
+    householdId = createHousehold(householdName || `${trimmedName}'s household`).id;
+  } else {
+    const firstHousehold = db.prepare('SELECT id FROM households ORDER BY created_at ASC LIMIT 1').get();
+    if (firstHousehold) {
+      householdId = firstHousehold.id;
+    } else {
+      householdId = createHousehold(householdName || `${trimmedName}'s household`).id;
+    }
+  }
+
   const id = crypto.randomUUID();
   const pinHash = bcrypt.hashSync(pin, 10);
-  const createdAt = new Date().toISOString();
-  const userCount = db.prepare('SELECT COUNT(*) as total FROM users').get().total;
-  const role = userCount === 0 ? 'admin' : 'child';
+  const householdUserCount = db.prepare('SELECT COUNT(*) as total FROM users WHERE household_id = ?').get(householdId).total;
+  const role = householdUserCount === 0 ? 'admin' : 'child';
 
   db.prepare(
-    'INSERT INTO users (id, name, pin_hash, role, failed_login_attempts, created_at) VALUES (?, ?, ?, ?, 0, ?)'
-  ).run(id, trimmedName, pinHash, role, createdAt);
+    'INSERT INTO users (id, household_id, name, pin_hash, role, failed_login_attempts, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)'
+  ).run(id, householdId, trimmedName, pinHash, role, createdAt);
+
+  if (inviteCode) {
+    inviteResolution = consumeInvite(String(inviteCode).trim(), id);
+    if (inviteResolution.error) {
+      db.prepare('DELETE FROM users WHERE id = ?').run(id);
+      return res.status(400).json({ error: inviteResolution.error });
+    }
+  }
 
   const token = issueSessionToken(id, req);
-  res.status(201).json({ token, user: { id, name: trimmedName, role, created_at: createdAt } });
+  res.status(201).json({ token, user: { id, household_id: householdId, name: trimmedName, role, created_at: createdAt } });
 });
 
 // POST /api/auth/login — Login with user ID + PIN
@@ -80,13 +121,40 @@ router.post('/login', (req, res) => {
   db.prepare('UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?').run(user.id);
 
   const token = issueSessionToken(user.id, req);
-  res.json({ token, user: { id: user.id, name: user.name, role: user.role, created_at: user.created_at } });
+  res.json({
+    token,
+    user: {
+      id: user.id,
+      household_id: user.household_id || null,
+      name: user.name,
+      role: user.role,
+      created_at: user.created_at
+    }
+  });
 });
 
 // POST /api/auth/logout — Revoke current session
 router.post('/logout', authenticateToken, (req, res) => {
   revokeSession(req.sessionId);
   res.json({ message: 'Logged out successfully' });
+});
+
+// GET /api/auth/household — get current household details
+router.get('/household', authenticateToken, (req, res) => {
+  const household = getUserHousehold(req.userId);
+  if (!household) {
+    return res.status(404).json({ error: 'Household not found' });
+  }
+
+  const memberCount = db.prepare('SELECT COUNT(*) as total FROM users WHERE household_id = ?').get(household.id).total;
+  return res.json({ ...household, memberCount });
+});
+
+// POST /api/auth/household/invites — create join invite for current household
+router.post('/household/invites', authenticateToken, requireParentOrAdmin, (req, res) => {
+  const ttlHours = Number.parseInt(req.body?.ttlHours || '24', 10);
+  const invite = createInvite(req.householdId, req.userId, Number.isInteger(ttlHours) && ttlHours > 0 ? ttlHours : 24);
+  return res.status(201).json(invite);
 });
 
 module.exports = router;

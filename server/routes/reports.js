@@ -13,13 +13,16 @@ function centsToAmount(cents) {
 function buildScopeWhere(alias, req, params) {
   const scope = req.query.scope || 'mine';
   const canSeeHousehold = req.userRole === 'admin' || req.userRole === 'parent';
+  params.push(req.householdId);
+  let sql = ` AND EXISTS (SELECT 1 FROM users household_user WHERE household_user.id = ${alias}.from_id AND household_user.household_id = ?)`;
 
   if (scope === 'household' && canSeeHousehold) {
-    return '';
+    return sql;
   }
 
   params.push(req.userId, req.userId);
-  return ` AND (${alias}.from_id = ? OR ${alias}.to_id = ?)`;
+  sql += ` AND (${alias}.from_id = ? OR ${alias}.to_id = ?)`;
+  return sql;
 }
 
 function buildDateWhere(alias, req, params) {

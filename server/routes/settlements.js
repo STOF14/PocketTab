@@ -21,16 +21,20 @@ router.get('/net', (req, res) => {
 
   const requests = scope === 'household'
     ? db.prepare(
-      `SELECT id, from_id, to_id, amount_cents, COALESCE(settled_cents, 0) as settled_cents
-       FROM requests
-       WHERE status IN ('accepted', 'partially_settled')`
-    ).all()
+      `SELECT r.id, r.from_id, r.to_id, r.amount_cents, COALESCE(r.settled_cents, 0) as settled_cents
+       FROM requests r
+       JOIN users u ON u.id = r.from_id
+       WHERE u.household_id = ?
+         AND r.status IN ('accepted', 'partially_settled')`
+    ).all(req.householdId)
     : db.prepare(
-      `SELECT id, from_id, to_id, amount_cents, COALESCE(settled_cents, 0) as settled_cents
-       FROM requests
-       WHERE status IN ('accepted', 'partially_settled')
-         AND (from_id = ? OR to_id = ?)`
-    ).all(req.userId, req.userId);
+      `SELECT r.id, r.from_id, r.to_id, r.amount_cents, COALESCE(r.settled_cents, 0) as settled_cents
+       FROM requests r
+       JOIN users u ON u.id = r.from_id
+       WHERE u.household_id = ?
+         AND r.status IN ('accepted', 'partially_settled')
+         AND (r.from_id = ? OR r.to_id = ?)`
+    ).all(req.householdId, req.userId, req.userId);
 
   const balancesByUser = {};
 
@@ -46,7 +50,7 @@ router.get('/net', (req, res) => {
 
   const userIds = Object.keys(balancesByUser);
   const users = userIds.length > 0
-    ? db.prepare(`SELECT id, name, role FROM users WHERE id IN (${userIds.map(() => '?').join(',')})`).all(...userIds)
+    ? db.prepare(`SELECT id, name, role FROM users WHERE household_id = ? AND id IN (${userIds.map(() => '?').join(',')})`).all(req.householdId, ...userIds)
     : [];
 
   const userMap = Object.fromEntries(users.map((u) => [u.id, u]));

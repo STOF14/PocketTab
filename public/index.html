@@ -15,6 +15,7 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <div id="connectivity-banner" class="connectivity-banner hidden" role="status" aria-live="polite"></div>
 
   <!-- ===== AUTH SCREEN ===== -->
   <div id="auth-screen">
@@ -37,11 +38,18 @@
       </div>
 
       <!-- Step 2: Create New User -->
-      <div id="auth-create" class="hidden">
-        <h2>Create Profile</h2>
-        <div class="form-group">
-          <label for="new-name">Name</label>
-          <input type="text" id="new-name" maxlength="20" placeholder="Your name" autocomplete="off">
+        <div id="auth-create" class="hidden">
+          <h2>Create Profile</h2>
+          <div class="form-group">
+            <label for="invite-code">Household Invite Code (optional)</label>
+            <input type="text" id="invite-code" maxlength="32" placeholder="Join existing household" autocomplete="off">
+          </div>
+          <div class="form-group" style="margin-top:-8px;">
+            <label><input type="checkbox" id="create-household"> Create a new household</label>
+          </div>
+          <div class="form-group">
+            <label for="new-name">Name</label>
+            <input type="text" id="new-name" maxlength="20" placeholder="Your name" autocomplete="off">
           <div class="error-msg hidden" id="name-error"></div>
         </div>
         <div class="form-group">

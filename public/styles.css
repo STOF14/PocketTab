@@ -25,6 +25,25 @@
 
     /* ===== UTILITY ===== */
     .hidden { display: none !important; }
+    .connectivity-banner {
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      border-bottom: var(--border);
+      padding: 8px var(--pad);
+      font-size: 12px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+    .connectivity-banner.offline {
+      background: var(--white);
+      color: var(--navy);
+    }
+    .connectivity-banner.online {
+      background: var(--navy);
+      color: var(--white);
+    }
 
     /* ===== AUTH SCREEN ===== */
     #auth-screen {

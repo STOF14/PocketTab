@@ -6,6 +6,7 @@ const { parsePaging, toAmountCents, sanitizeTags, parseDateInput, nowIso } = req
 const { requiresApprovalForChildRequest } = require('../services/allowances');
 const { createNotifications, getParentAndAdminIds } = require('../services/notifications');
 const { processDueRecurringRequests } = require('../services/recurring');
+const { areUsersInSameHousehold } = require('../services/households');
 
 const router = express.Router();
 router.use(authenticateToken);
@@ -92,7 +93,7 @@ function applyFilters(query, reqUserId, params) {
 
 // GET /api/requests — List requests for current user with filters/search
 router.get('/', (req, res) => {
-  processDueRecurringRequests();
+  processDueRecurringRequests(25, req.householdId);
 
   const paging = parsePaging(req.query);
   if (paging.error) {
@@ -137,9 +138,12 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: 'Amount must be greater than 0' });
   }
 
-  const targetUser = db.prepare('SELECT id FROM users WHERE id = ?').get(toId);
+  const targetUser = db.prepare('SELECT id, household_id FROM users WHERE id = ?').get(toId);
   if (!targetUser) {
     return res.status(404).json({ error: 'Target user not found' });
+  }
+  if (!areUsersInSameHousehold(req.userId, toId)) {
+    return res.status(403).json({ error: 'Requests are only allowed within the same household' });
   }
 
   if (toId === req.userId) {
@@ -162,7 +166,7 @@ router.post('/', (req, res) => {
 
   if (needsApproval) {
     createNotifications(
-      getParentAndAdminIds(req.userId),
+      getParentAndAdminIds(req.userId, req.householdId),
       'request_approval_needed',
       'Child request needs approval',
       `${req.user.name} created a request requiring approval`,
@@ -190,8 +194,11 @@ router.post('/', (req, res) => {
 // POST /api/requests/:id/approve-child — parent/admin approves a child request
 router.post('/:id/approve-child', requireParentOrAdmin, (req, res) => {
   const request = db.prepare(
-    'SELECT id, from_id, to_id, requires_approval, status FROM requests WHERE id = ?'
-  ).get(req.params.id);
+    `SELECT r.id, r.from_id, r.to_id, r.requires_approval, r.status
+     FROM requests r
+     JOIN users u ON u.id = r.from_id
+     WHERE r.id = ? AND u.household_id = ?`
+  ).get(req.params.id, req.householdId);
 
   if (!request) {
     return res.status(404).json({ error: 'Request not found' });
@@ -226,8 +233,11 @@ router.post('/:id/approve-child', requireParentOrAdmin, (req, res) => {
 // POST /api/requests/:id/reject-child — parent/admin rejects a child request
 router.post('/:id/reject-child', requireParentOrAdmin, (req, res) => {
   const request = db.prepare(
-    'SELECT id, from_id, requires_approval, status FROM requests WHERE id = ?'
-  ).get(req.params.id);
+    `SELECT r.id, r.from_id, r.requires_approval, r.status
+     FROM requests r
+     JOIN users u ON u.id = r.from_id
+     WHERE r.id = ? AND u.household_id = ?`
+  ).get(req.params.id, req.householdId);
 
   if (!request) {
     return res.status(404).json({ error: 'Request not found' });
@@ -268,8 +278,11 @@ router.patch('/:id', (req, res) => {
   }
 
   const request = db.prepare(
-    'SELECT id, from_id, to_id, status FROM requests WHERE id = ?'
-  ).get(req.params.id);
+    `SELECT r.id, r.from_id, r.to_id, r.status
+     FROM requests r
+     JOIN users u ON u.id = r.from_id
+     WHERE r.id = ? AND u.household_id = ?`
+  ).get(req.params.id, req.householdId);
 
   if (!request) {
     return res.status(404).json({ error: 'Request not found' });

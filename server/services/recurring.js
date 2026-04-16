@@ -15,11 +15,22 @@ function nextRunAt(currentIso, frequency) {
   return d.toISOString();
 }
 
-function processDueRecurringRequests(limit = 25) {
+function processDueRecurringRequests(limit = 25, householdId = null) {
   const now = nowIso();
-  const due = db.prepare(
-    'SELECT * FROM recurring_requests WHERE active = 1 AND next_run_at <= ? ORDER BY next_run_at ASC LIMIT ?'
-  ).all(now, limit);
+  const due = householdId
+    ? db.prepare(
+      `SELECT rr.*
+       FROM recurring_requests rr
+       JOIN users u ON u.id = rr.from_id
+       WHERE u.household_id = ?
+         AND rr.active = 1
+         AND rr.next_run_at <= ?
+       ORDER BY rr.next_run_at ASC
+       LIMIT ?`
+    ).all(householdId, now, limit)
+    : db.prepare(
+      'SELECT * FROM recurring_requests WHERE active = 1 AND next_run_at <= ? ORDER BY next_run_at ASC LIMIT ?'
+    ).all(now, limit);
 
   if (due.length === 0) {
     return { generated: 0 };

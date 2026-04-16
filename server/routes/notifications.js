@@ -68,16 +68,18 @@ router.post('/reminders/run', requireParentOrAdmin, (req, res) => {
   const cutoff = new Date(Date.now() - staleHours * 60 * 60 * 1000).toISOString();
 
   const pendingRequests = db.prepare(
-    `SELECT id, from_id, to_id, reason
-     FROM requests
-     WHERE status IN ('pending', 'pending_approval') AND created_at <= ?`
-  ).all(cutoff);
+    `SELECT r.id, r.from_id, r.to_id, r.reason
+     FROM requests r
+     JOIN users u ON u.id = r.from_id
+     WHERE u.household_id = ? AND r.status IN ('pending', 'pending_approval') AND r.created_at <= ?`
+  ).all(req.householdId, cutoff);
 
   const pendingPayments = db.prepare(
-    `SELECT id, from_id, to_id, message
-     FROM payments
-     WHERE status = 'sent' AND created_at <= ?`
-  ).all(cutoff);
+    `SELECT p.id, p.from_id, p.to_id, p.message
+     FROM payments p
+     JOIN users u ON u.id = p.from_id
+     WHERE u.household_id = ? AND p.status = 'sent' AND p.created_at <= ?`
+  ).all(req.householdId, cutoff);
 
   let created = 0;
 

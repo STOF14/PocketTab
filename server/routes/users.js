@@ -16,11 +16,12 @@ const router = express.Router();
 router.use(authenticateToken);
 
 const VALID_ROLES = new Set(['admin', 'parent', 'child']);
+const MAX_HOUSEHOLD_RESET_USERS = 5000;
 
 // GET /api/users/me — current authenticated profile
 router.get('/me', (req, res) => {
   const me = db.prepare(
-    'SELECT id, name, role, failed_login_attempts, locked_until, created_at FROM users WHERE id = ?'
+    'SELECT id, household_id, name, role, failed_login_attempts, locked_until, created_at FROM users WHERE id = ?'
   ).get(req.userId);
 
   if (!me) {
@@ -33,8 +34,8 @@ router.get('/me', (req, res) => {
 // GET /api/users/members — list household members (parent/admin only)
 router.get('/members', requireParentOrAdmin, (req, res) => {
   const members = db.prepare(
-    'SELECT id, name, role, created_at FROM users ORDER BY created_at ASC'
-  ).all();
+    'SELECT id, household_id, name, role, created_at FROM users WHERE household_id = ? ORDER BY created_at ASC'
+  ).all(req.householdId);
 
   return res.json(members);
 });
@@ -46,9 +47,12 @@ router.patch('/:id/role', requireRoles(['admin']), (req, res) => {
     return res.status(400).json({ error: 'Invalid role' });
   }
 
-  const user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(req.params.id);
+  const user = db.prepare('SELECT id, role, household_id FROM users WHERE id = ?').get(req.params.id);
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
+  }
+  if (user.household_id !== req.householdId) {
+    return res.status(403).json({ error: 'Cannot update role for user outside your household' });
   }
 
   db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, req.params.id);
@@ -99,7 +103,7 @@ router.post('/pin-recovery-request', (req, res) => {
     'INSERT INTO pin_reset_requests (id, user_id, requested_by, note, status, created_at) VALUES (?, ?, ?, ?, ?, ?)'
   ).run(id, req.userId, req.userId, note ? String(note).slice(0, 200) : null, 'pending', createdAt);
 
-  const targets = getParentAndAdminIds(req.userId);
+  const targets = getParentAndAdminIds(req.userId, req.householdId);
   createNotifications(
     targets,
     'pin_recovery_requested',
@@ -118,9 +122,12 @@ router.post('/:id/pin-reset', requireParentOrAdmin, (req, res) => {
     return res.status(400).json({ error: 'New PIN must be 4 digits' });
   }
 
-  const user = db.prepare('SELECT id, role, name FROM users WHERE id = ?').get(req.params.id);
+  const user = db.prepare('SELECT id, role, name, household_id FROM users WHERE id = ?').get(req.params.id);
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
+  }
+  if (user.household_id !== req.householdId) {
+    return res.status(403).json({ error: 'Cannot reset PIN for user outside your household' });
   }
 
   if (user.role === 'admin' && !isAdmin(req.userRole)) {
@@ -149,6 +156,13 @@ router.post('/:id/pin-reset', requireParentOrAdmin, (req, res) => {
 // GET /api/users/sessions — list active sessions for current user (or target user if admin)
 router.get('/sessions', (req, res) => {
   const targetUserId = req.query.userId && isAdmin(req.userRole) ? req.query.userId : req.userId;
+  const target = db.prepare('SELECT id, household_id FROM users WHERE id = ?').get(targetUserId);
+  if (!target) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  if (target.household_id !== req.householdId) {
+    return res.status(403).json({ error: 'Cannot view sessions for user outside your household' });
+  }
 
   const sessions = db.prepare(
     `SELECT id, user_id, created_at, expires_at, revoked_at, last_seen_at, user_agent, ip
@@ -162,9 +176,17 @@ router.get('/sessions', (req, res) => {
 
 // DELETE /api/users/sessions/:id — revoke session (self or admin)
 router.delete('/sessions/:id', (req, res) => {
-  const session = db.prepare('SELECT id, user_id, revoked_at FROM sessions WHERE id = ?').get(req.params.id);
+  const session = db.prepare(
+    `SELECT s.id, s.user_id, s.revoked_at, u.household_id
+     FROM sessions s
+     JOIN users u ON u.id = s.user_id
+     WHERE s.id = ?`
+  ).get(req.params.id);
   if (!session) {
     return res.status(404).json({ error: 'Session not found' });
+  }
+  if (session.household_id !== req.householdId) {
+    return res.status(403).json({ error: 'Cannot revoke session outside your household' });
   }
 
   if (session.user_id !== req.userId && !isAdmin(req.userRole)) {
@@ -190,17 +212,32 @@ router.delete('/reset-all', requireParentOrAdmin, (req, res) => {
     return res.status(400).json({ error: 'Invalid reset confirmation text' });
   }
 
+  const householdUserIds = db.prepare('SELECT id FROM users WHERE household_id = ?').all(req.householdId).map((row) => row.id);
+  if (householdUserIds.length === 0) {
+    return res.status(400).json({ error: 'No household members found to reset' });
+  }
+  if (householdUserIds.length > MAX_HOUSEHOLD_RESET_USERS) {
+    return res.status(400).json({ error: `Household reset limit exceeded (${MAX_HOUSEHOLD_RESET_USERS} users)` });
+  }
+  const placeholders = householdUserIds.map(() => '?').join(', ');
+
   const wipeAll = db.transaction(() => {
-    db.prepare('DELETE FROM attachments').run();
-    db.prepare('DELETE FROM pin_reset_requests').run();
-    db.prepare('DELETE FROM notifications').run();
-    db.prepare('DELETE FROM recurring_requests').run();
-    db.prepare('DELETE FROM allowances').run();
-    db.prepare('DELETE FROM sessions').run();
-    db.prepare('DELETE FROM messages').run();
-    db.prepare('DELETE FROM payments').run();
-    db.prepare('DELETE FROM requests').run();
-    db.prepare('DELETE FROM users').run();
+    db.prepare('DELETE FROM household_invites WHERE household_id = ?').run(req.householdId);
+    db.prepare(`DELETE FROM attachments WHERE user_id IN (${placeholders})`).run(...householdUserIds);
+    db.prepare(`DELETE FROM pin_reset_requests WHERE user_id IN (${placeholders}) OR requested_by IN (${placeholders}) OR resolved_by IN (${placeholders})`)
+      .run(...householdUserIds, ...householdUserIds, ...householdUserIds);
+    db.prepare(`DELETE FROM notifications WHERE user_id IN (${placeholders})`).run(...householdUserIds);
+    db.prepare(`DELETE FROM recurring_requests WHERE creator_id IN (${placeholders}) OR from_id IN (${placeholders}) OR to_id IN (${placeholders})`)
+      .run(...householdUserIds, ...householdUserIds, ...householdUserIds);
+    db.prepare(`DELETE FROM allowances WHERE parent_id IN (${placeholders}) OR child_id IN (${placeholders})`)
+      .run(...householdUserIds, ...householdUserIds);
+    db.prepare(`DELETE FROM sessions WHERE user_id IN (${placeholders})`).run(...householdUserIds);
+    db.prepare(`DELETE FROM messages WHERE user_id IN (${placeholders})`).run(...householdUserIds);
+    db.prepare(`DELETE FROM payments WHERE from_id IN (${placeholders}) OR to_id IN (${placeholders})`)
+      .run(...householdUserIds, ...householdUserIds);
+    db.prepare(`DELETE FROM requests WHERE from_id IN (${placeholders}) OR to_id IN (${placeholders})`)
+      .run(...householdUserIds, ...householdUserIds);
+    db.prepare(`DELETE FROM users WHERE id IN (${placeholders})`).run(...householdUserIds);
   });
 
   wipeAll();

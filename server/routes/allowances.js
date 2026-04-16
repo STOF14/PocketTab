@@ -26,13 +26,13 @@ router.get('/', (req, res) => {
 
   const isPrivileged = req.userRole === 'parent' || req.userRole === 'admin';
   const where = isPrivileged
-    ? 'FROM allowances'
-    : 'FROM allowances WHERE child_id = ?';
-  const params = isPrivileged ? [] : [req.userId];
+    ? 'FROM allowances a JOIN users c ON c.id = a.child_id WHERE c.household_id = ?'
+    : 'FROM allowances a JOIN users c ON c.id = a.child_id WHERE a.child_id = ? AND c.household_id = ?';
+  const params = isPrivileged ? [req.householdId] : [req.userId, req.householdId];
 
   const total = db.prepare(`SELECT COUNT(*) as total ${where}`).get(...params).total;
 
-  let sql = `SELECT * ${where} ORDER BY created_at DESC`;
+  let sql = `SELECT a.* ${where} ORDER BY a.created_at DESC`;
   if (paging.limit !== null) {
     sql += ' LIMIT ? OFFSET ?';
     params.push(paging.limit, paging.offset);
@@ -55,9 +55,12 @@ router.post('/', requireParentOrAdmin, (req, res) => {
     return res.status(400).json({ error: 'period must be weekly or monthly' });
   }
 
-  const child = db.prepare('SELECT id, role FROM users WHERE id = ?').get(childId);
+  const child = db.prepare('SELECT id, role, household_id FROM users WHERE id = ?').get(childId);
   if (!child) {
     return res.status(404).json({ error: 'Child user not found' });
+  }
+  if (child.household_id !== req.householdId) {
+    return res.status(403).json({ error: 'Allowances can only target users in your household' });
   }
 
   if (child.role !== 'child') {
@@ -98,7 +101,12 @@ router.post('/', requireParentOrAdmin, (req, res) => {
 
 // PATCH /api/allowances/:id — update allowance rule (parent/admin)
 router.patch('/:id', requireParentOrAdmin, (req, res) => {
-  const existing = db.prepare('SELECT * FROM allowances WHERE id = ?').get(req.params.id);
+  const existing = db.prepare(
+    `SELECT a.*
+     FROM allowances a
+     JOIN users c ON c.id = a.child_id
+     WHERE a.id = ? AND c.household_id = ?`
+  ).get(req.params.id, req.householdId);
   if (!existing) {
     return res.status(404).json({ error: 'Allowance not found' });
   }

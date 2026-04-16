@@ -1,11 +1,13 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const db = require('../db');
+const config = require('../config');
 const { isParentOrAdmin } = require('../services/roles');
 
 const DEV_FALLBACK_SECRET = 'pockettab-dev-secret-change-in-production';
-const isProduction = process.env.NODE_ENV === 'production';
-const SESSION_TTL_DAYS = Number.parseInt(process.env.SESSION_TTL_DAYS || '7', 10);
+const BEARER_PREFIX = 'Bearer ';
+const isProduction = config.isProduction;
+const SESSION_TTL_DAYS = config.sessionTtlDays;
 
 if (isProduction && !process.env.JWT_SECRET) {
   throw new Error('JWT_SECRET is required when NODE_ENV=production');
@@ -62,7 +64,9 @@ function revokeAllSessionsForUser(userId) {
 
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  const token = typeof authHeader === 'string' && authHeader.startsWith(BEARER_PREFIX)
+    ? authHeader.slice(BEARER_PREFIX.length).trim()
+    : null;
 
   if (!token) {
     return res.status(401).json({ error: 'Authentication required' });
@@ -76,7 +80,7 @@ function authenticateToken(req, res, next) {
 
     const session = db.prepare(
       `SELECT s.id, s.user_id, s.jti, s.token_hash, s.expires_at, s.revoked_at,
-              u.name, u.role
+              u.name, u.role, u.household_id
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.jti = ? AND s.user_id = ?`
@@ -97,10 +101,12 @@ function authenticateToken(req, res, next) {
 
     req.userId = session.user_id;
     req.userRole = session.role;
+    req.householdId = session.household_id;
     req.user = {
       id: session.user_id,
       name: session.name,
-      role: session.role
+      role: session.role,
+      household_id: session.household_id
     };
     req.sessionId = session.id;
 

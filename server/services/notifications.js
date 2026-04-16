@@ -50,8 +50,10 @@ function createNotifications(userIds, type, title, body, meta = null) {
   return inserted;
 }
 
-function getParentAndAdminIds(excludeUserId = null) {
-  const rows = db.prepare("SELECT id FROM users WHERE role IN ('parent', 'admin')").all();
+function getParentAndAdminIds(excludeUserId = null, householdId = null) {
+  const rows = householdId
+    ? db.prepare("SELECT id FROM users WHERE role IN ('parent', 'admin') AND household_id = ?").all(householdId)
+    : db.prepare("SELECT id FROM users WHERE role IN ('parent', 'admin')").all();
   return rows
     .map((row) => row.id)
     .filter((id) => id && id !== excludeUserId);

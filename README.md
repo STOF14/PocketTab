@@ -48,8 +48,16 @@ The app will be available at <http://localhost:3000>.
 | `DB_PATH` | `./pockettab.db` | SQLite database file path override |
 | `ALLOW_DATA_RESET` | `false` | Set `true` to enable `DELETE /api/users/reset-all` |
 | `SLOW_REQUEST_MS` | `1000` | Warn-level logging threshold for slow HTTP requests |
+| `JSON_BODY_LIMIT` | `1mb` in production, else `10mb` | Max JSON request payload size |
+| `TRUST_PROXY` | `1` in production, else `false` | Express trust-proxy setting for HTTPS/load balancer setups |
+| `SESSION_TTL_DAYS` | `7` (clamped to 1-30) | JWT/session lifetime in days |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Shared time window for API rate limits |
+| `GLOBAL_RATE_LIMIT_MAX` | `300` in production, else `100` | Max API requests per IP per window |
+| `AUTH_RATE_LIMIT_MAX` | `30` in production, else `10` | Max login/register requests per IP per window |
 | `DB_BACKUP_DIR` | `./backups` | Directory where backup files are written |
 | `DB_BACKUP_KEEP` | `14` | Number of recent backups to keep (older ones are pruned) |
+| `DB_BACKUP_MIN_COUNT` | `1` | Minimum backup count expected by backup verification |
+| `DB_BACKUP_MAX_AGE_HOURS` | `30` | Maximum age for latest backup in verification checks |
 
 ## Project Structure
 
@@ -122,11 +130,59 @@ The app will be available at <http://localhost:3000>.
 
 - Run ad-hoc backup: `npm run backup:db`
 - Daily-style backup with 30 retention: `npm run backup:db:daily`
+- Verify backup freshness/retention policy: `npm run verify:backups`
+- Restore from a backup file: `npm run restore:db -- /absolute/path/to/pockettab-YYYYMMDD-....db`
 - For Linux cron, run once per day at 02:15:
 
 ```bash
 15 2 * * * cd /path/to/PocketTab && npm run backup:db:daily >> /var/log/pockettab-backup.log 2>&1
 ```
+
+#### Restore Procedure
+
+1. Stop writes to the app (maintenance mode / stop the app process).
+2. Restore from a known-good backup:
+   - `npm run restore:db -- /absolute/path/to/backup.db`
+3. Start the app.
+4. Run `npm run verify:backups` and `npm test` to confirm integrity.
+
+### Deployment (Always-on + HTTPS)
+
+- Keep the existing same-origin setup: Express serves both API and frontend.
+- Deploy behind HTTPS with a public domain (reverse proxy/load balancer).
+- Set production runtime vars at minimum:
+  - `NODE_ENV=production`
+  - `JWT_SECRET=<strong-random-secret>`
+  - `DB_PATH=<durable managed volume path>`
+  - `TRUST_PROXY=1`
+- Run health monitoring against `GET /api/health`:
+  - `HEALTH_URL=https://your-domain/api/health npm run monitor:health`
+- Run staged smoke tests before release:
+  - `SMOKE_BASE_URL=https://your-domain npm run smoke:staging`
+
+### Token Handling Policy
+
+- Tokens are always sent as `Authorization: Bearer <token>`.
+- Session TTL is controlled by `SESSION_TTL_DAYS` (1-30 day guardrail).
+- In production, `JWT_SECRET` is mandatory and dev fallback secrets are blocked.
+
+### Multi-family (Household Tenancy)
+
+- Users are linked to a household (`users.household_id`) and core write operations are household-scoped.
+- New APIs:
+  - `GET /api/auth/household` — current household details
+  - `POST /api/auth/household/invites` — create join invite (parent/admin)
+- Registration supports:
+  - `inviteCode` to join an existing household
+  - `createHousehold: true` and optional `householdName` to start a new household
+
+### Frontend Runtime Network Config (Optional)
+
+You can tune retry behavior by defining `window.POCKETTAB_CONFIG` before loading `app.js`:
+
+- `requestTimeoutMs` (default `10000`)
+- `maxSafeRetries` (default `2`, applied to `GET` requests only)
+- `retryBaseDelayMs` (default `300`)
 
 ### Continuous Integration
 
