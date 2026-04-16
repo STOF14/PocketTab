@@ -5,6 +5,7 @@ const config = require('../config');
 const { isParentOrAdmin } = require('../services/roles');
 
 const DEV_FALLBACK_SECRET = 'pockettab-dev-secret-change-in-production';
+const BEARER_PREFIX = 'Bearer ';
 const isProduction = config.isProduction;
 const SESSION_TTL_DAYS = config.sessionTtlDays;
 
@@ -63,8 +64,8 @@ function revokeAllSessionsForUser(userId) {
 
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
-  const token = typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
-    ? authHeader.slice(7).trim()
+  const token = typeof authHeader === 'string' && authHeader.startsWith(BEARER_PREFIX)
+    ? authHeader.slice(BEARER_PREFIX.length).trim()
     : null;
 
   if (!token) {

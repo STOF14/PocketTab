@@ -75,6 +75,8 @@ function requestLogger(options = {}) {
   };
 }
 
+// Apply baseline browser hardening headers for every response.
+// HSTS is only enabled in production deployments behind HTTPS.
 function securityHeaders(req, res, next) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');

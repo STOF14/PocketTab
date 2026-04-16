@@ -21,9 +21,12 @@
      */
 
     // ===== API HELPER =====
+    var runtimeConfig = window.POCKETTAB_CONFIG || {};
     var authToken = localStorage.getItem('pt_token') || null;
-    var requestTimeoutMs = 10000;
-    var maxSafeRetries = 2;
+    var REQUEST_TIMEOUT_MS = Number(runtimeConfig.requestTimeoutMs) || 10000;
+    var MAX_SAFE_RETRIES = Number(runtimeConfig.maxSafeRetries) || 2;
+    var RETRY_BASE_DELAY_MS = Number(runtimeConfig.retryBaseDelayMs) || 300;
+    var CONNECTIVITY_BANNER_DISPLAY_MS = 1200;
     var connectivityBanner = document.getElementById('connectivity-banner');
 
     function wait(ms) {
@@ -47,7 +50,7 @@
         setConnectivityState('online', 'Connected');
         setTimeout(function() {
           setConnectivityState(null, null);
-        }, 1200);
+        }, CONNECTIVITY_BANNER_DISPLAY_MS);
       } else {
         setConnectivityState('offline', 'Offline: waiting for connection...');
       }
@@ -55,7 +58,7 @@
 
     async function fetchWithTimeout(url, opts) {
       var controller = new AbortController();
-      var timeout = setTimeout(function() { controller.abort(); }, requestTimeoutMs);
+      var timeout = setTimeout(function() { controller.abort(); }, REQUEST_TIMEOUT_MS);
       try {
         return await fetch(url, Object.assign({}, opts, { signal: controller.signal }));
       } finally {
@@ -76,7 +79,7 @@
       }
       var canRetry = method === 'GET';
       var lastError = null;
-      var attempts = canRetry ? (maxSafeRetries + 1) : 1;
+      var attempts = canRetry ? (MAX_SAFE_RETRIES + 1) : 1;
 
       for (var attempt = 0; attempt < attempts; attempt += 1) {
         try {
@@ -105,7 +108,7 @@
             break;
           }
 
-          await wait(300 * (attempt + 1));
+          await wait(RETRY_BASE_DELAY_MS * (attempt + 1));
         }
       }
 

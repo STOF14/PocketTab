@@ -166,6 +166,14 @@ The app will be available at <http://localhost:3000>.
 - Session TTL is controlled by `SESSION_TTL_DAYS` (1-30 day guardrail).
 - In production, `JWT_SECRET` is mandatory and dev fallback secrets are blocked.
 
+### Frontend Runtime Network Config (Optional)
+
+You can tune retry behavior by defining `window.POCKETTAB_CONFIG` before loading `app.js`:
+
+- `requestTimeoutMs` (default `10000`)
+- `maxSafeRetries` (default `2`, applied to `GET` requests only)
+- `retryBaseDelayMs` (default `300`)
+
 ### Continuous Integration
 
 - GitHub Actions workflow in `.github/workflows/ci.yml` runs `npm ci` and `npm test` on every push and pull request.

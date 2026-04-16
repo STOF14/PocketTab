@@ -3,7 +3,8 @@
 const BASE_URL = (process.env.SMOKE_BASE_URL || '').replace(/\/+$/, '');
 const PIN = process.env.SMOKE_TEST_PIN || '1234';
 const TIMEOUT_MS = Number.parseInt(process.env.SMOKE_TIMEOUT_MS || '10000', 10);
-const suffix = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+const RANDOM_SUFFIX_RANGE = 1000;
+const suffix = `${Date.now()}${Math.floor(Math.random() * RANDOM_SUFFIX_RANGE)}`;
 
 if (!BASE_URL) {
   console.error(JSON.stringify({ ok: false, error: 'SMOKE_BASE_URL is required' }));
