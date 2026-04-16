@@ -303,6 +303,8 @@
       var name = document.getElementById('new-name').value.trim();
       var pin = document.getElementById('new-pin').value.trim();
       var confirmPin = document.getElementById('confirm-pin').value.trim();
+      var inviteCode = document.getElementById('invite-code').value.trim();
+      var createHousehold = document.getElementById('create-household').checked;
       var valid = true;
 
       hideError('name-error');
@@ -327,7 +329,12 @@
       if (!valid) return;
 
       try {
-        var result = await api('POST', '/auth/register', { name: name, pin: pin });
+        var result = await api('POST', '/auth/register', {
+          name: name,
+          pin: pin,
+          inviteCode: inviteCode || undefined,
+          createHousehold: createHousehold
+        });
 
         // Auto-login after registration
         authToken = result.token;
@@ -341,6 +348,8 @@
         document.getElementById('new-name').value = '';
         document.getElementById('new-pin').value = '';
         document.getElementById('confirm-pin').value = '';
+        document.getElementById('invite-code').value = '';
+        document.getElementById('create-household').checked = false;
 
         await loadUsers();
         renderUserList();

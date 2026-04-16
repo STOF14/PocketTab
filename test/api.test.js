@@ -361,3 +361,50 @@ test('family of 4 full advanced feature suite', async () => {
 
   process.env.ALLOW_DATA_RESET = 'false';
 });
+
+test('multi-family isolation with household invites', async () => {
+  const suffix = uniqueSuffix();
+  const familyAAdmin = await registerUser(`FamilyA-Admin-${suffix}`, '1111');
+
+  const createInviteRes = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(familyAAdmin.token))
+    .send({ ttlHours: 48 });
+  assert.equal(createInviteRes.status, 201);
+  assert.ok(createInviteRes.body.code);
+
+  const familyAChild = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `FamilyA-Child-${suffix}`, pin: '2222', inviteCode: createInviteRes.body.code });
+  assert.equal(familyAChild.status, 201);
+
+  const familyBAdmin = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `FamilyB-Admin-${suffix}`, pin: '3333', createHousehold: true, householdName: 'Family B' });
+  assert.equal(familyBAdmin.status, 201);
+
+  const crossHouseholdRequest = await request(app)
+    .post('/api/requests')
+    .set(auth(familyAAdmin.token))
+    .send({ toId: familyBAdmin.body.user.id, amount: 5, reason: 'cross household test' });
+  assert.equal(crossHouseholdRequest.status, 403);
+
+  const inHouseholdRequest = await request(app)
+    .post('/api/requests')
+    .set(auth(familyAAdmin.token))
+    .send({ toId: familyAChild.body.user.id, amount: 5, reason: 'in household test' });
+  assert.equal(inHouseholdRequest.status, 201);
+
+  const familyAMembers = await request(app)
+    .get('/api/users/members')
+    .set(auth(familyAAdmin.token));
+  assert.equal(familyAMembers.status, 200);
+  assert.equal(familyAMembers.body.length, 2);
+  assert.ok(familyAMembers.body.every((member) => [familyAAdmin.user.id, familyAChild.body.user.id].includes(member.id)));
+
+  const reset = await request(app)
+    .delete('/api/users/reset-all')
+    .set(auth(familyAAdmin.token))
+    .send({ confirmation: 'RESET EVERYTHING' });
+  assert.equal(reset.status, 403);
+});

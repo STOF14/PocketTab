@@ -166,6 +166,16 @@ The app will be available at <http://localhost:3000>.
 - Session TTL is controlled by `SESSION_TTL_DAYS` (1-30 day guardrail).
 - In production, `JWT_SECRET` is mandatory and dev fallback secrets are blocked.
 
+### Multi-family (Household Tenancy)
+
+- Users are linked to a household (`users.household_id`) and core write operations are household-scoped.
+- New APIs:
+  - `GET /api/auth/household` — current household details
+  - `POST /api/auth/household/invites` — create join invite (parent/admin)
+- Registration supports:
+  - `inviteCode` to join an existing household
+  - `createHousehold: true` and optional `householdName` to start a new household
+
 ### Frontend Runtime Network Config (Optional)
 
 You can tune retry behavior by defining `window.POCKETTAB_CONFIG` before loading `app.js`:

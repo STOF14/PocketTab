@@ -4,6 +4,7 @@ const db = require('../db');
 const { authenticateToken } = require('../middleware/auth');
 const { parsePaging, toAmountCents, sanitizeTags, parseDateInput, nowIso } = require('../services/utils');
 const { createNotifications } = require('../services/notifications');
+const { areUsersInSameHousehold } = require('../services/households');
 
 const router = express.Router();
 router.use(authenticateToken);
@@ -134,8 +135,11 @@ router.post('/', (req, res) => {
 
   if (requestId) {
     const linkedRequest = db.prepare(
-      'SELECT id, from_id, to_id, amount_cents, settled_cents, status FROM requests WHERE id = ?'
-    ).get(requestId);
+      `SELECT r.id, r.from_id, r.to_id, r.amount_cents, r.settled_cents, r.status
+       FROM requests r
+       JOIN users u ON u.id = r.from_id
+       WHERE r.id = ? AND u.household_id = ?`
+    ).get(requestId, req.householdId);
 
     if (!linkedRequest) {
       return res.status(404).json({ error: 'Linked request not found' });
@@ -164,6 +168,9 @@ router.post('/', (req, res) => {
   const targetUser = db.prepare('SELECT id FROM users WHERE id = ?').get(recipientId);
   if (!targetUser) {
     return res.status(404).json({ error: 'Target user not found' });
+  }
+  if (!areUsersInSameHousehold(req.userId, recipientId)) {
+    return res.status(403).json({ error: 'Payments are only allowed within the same household' });
   }
 
   if (recipientId === req.userId) {
@@ -232,8 +239,11 @@ router.patch('/:id', (req, res) => {
   }
 
   const payment = db.prepare(
-    'SELECT id, from_id, to_id, request_id, amount_cents, status FROM payments WHERE id = ?'
-  ).get(req.params.id);
+    `SELECT p.id, p.from_id, p.to_id, p.request_id, p.amount_cents, p.status
+     FROM payments p
+     JOIN users u ON u.id = p.from_id
+     WHERE p.id = ? AND u.household_id = ?`
+  ).get(req.params.id, req.householdId);
 
   if (!payment) {
     return res.status(404).json({ error: 'Payment not found' });
@@ -254,8 +264,11 @@ router.patch('/:id', (req, res) => {
 
     if (status === 'confirmed' && payment.request_id) {
       const linkedRequest = db.prepare(
-        'SELECT id, amount_cents, settled_cents, status FROM requests WHERE id = ?'
-      ).get(payment.request_id);
+        `SELECT r.id, r.amount_cents, r.settled_cents, r.status
+         FROM requests r
+         JOIN users u ON u.id = r.from_id
+         WHERE r.id = ? AND u.household_id = ?`
+      ).get(payment.request_id, req.householdId);
 
       if (linkedRequest && ['accepted', 'partially_settled'].includes(linkedRequest.status)) {
         const nextSettled = Math.min(

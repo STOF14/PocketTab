@@ -24,7 +24,7 @@ function shapeRecurring(row) {
 
 // GET /api/recurring — list recurring rules
 router.get('/', (req, res) => {
-  processDueRecurringRequests();
+  processDueRecurringRequests(25, req.householdId);
 
   const paging = parsePaging(req.query);
   if (paging.error) {
@@ -33,16 +33,16 @@ router.get('/', (req, res) => {
 
   const canSeeAll = req.userRole === 'admin' || req.userRole === 'parent';
   const where = canSeeAll
-    ? 'FROM recurring_requests'
-    : 'FROM recurring_requests WHERE from_id = ? OR to_id = ?';
+    ? 'FROM recurring_requests rr JOIN users u ON u.id = rr.from_id WHERE u.household_id = ?'
+    : 'FROM recurring_requests rr JOIN users u ON u.id = rr.from_id WHERE (rr.from_id = ? OR rr.to_id = ?) AND u.household_id = ?';
 
   const countSql = `SELECT COUNT(*) as total ${where}`;
   const total = canSeeAll
-    ? db.prepare(countSql).get().total
-    : db.prepare(countSql).get(req.userId, req.userId).total;
+    ? db.prepare(countSql).get(req.householdId).total
+    : db.prepare(countSql).get(req.userId, req.userId, req.householdId).total;
 
-  let sql = `SELECT * ${where} ORDER BY created_at DESC`;
-  const params = canSeeAll ? [] : [req.userId, req.userId];
+  let sql = `SELECT rr.* ${where} ORDER BY rr.created_at DESC`;
+  const params = canSeeAll ? [req.householdId] : [req.userId, req.userId, req.householdId];
 
   if (paging.limit !== null) {
     sql += ' LIMIT ? OFFSET ?';
@@ -76,10 +76,13 @@ router.post('/', requireParentOrAdmin, (req, res) => {
     return res.status(400).json({ error: 'frequency must be weekly or monthly' });
   }
 
-  const fromUser = db.prepare('SELECT id FROM users WHERE id = ?').get(fromId);
-  const toUser = db.prepare('SELECT id FROM users WHERE id = ?').get(toId);
+  const fromUser = db.prepare('SELECT id, household_id FROM users WHERE id = ?').get(fromId);
+  const toUser = db.prepare('SELECT id, household_id FROM users WHERE id = ?').get(toId);
   if (!fromUser || !toUser) {
     return res.status(404).json({ error: 'fromId or toId user not found' });
+  }
+  if (fromUser.household_id !== req.householdId || toUser.household_id !== req.householdId || fromUser.household_id !== toUser.household_id) {
+    return res.status(403).json({ error: 'Recurring rules must stay within your household' });
   }
 
   const createdAt = nowIso();
@@ -121,7 +124,12 @@ router.post('/', requireParentOrAdmin, (req, res) => {
 
 // PATCH /api/recurring/:id — update recurring rule (parent/admin)
 router.patch('/:id', requireParentOrAdmin, (req, res) => {
-  const existing = db.prepare('SELECT * FROM recurring_requests WHERE id = ?').get(req.params.id);
+  const existing = db.prepare(
+    `SELECT rr.*
+     FROM recurring_requests rr
+     JOIN users u ON u.id = rr.from_id
+     WHERE rr.id = ? AND u.household_id = ?`
+  ).get(req.params.id, req.householdId);
   if (!existing) {
     return res.status(404).json({ error: 'Recurring rule not found' });
   }
@@ -178,7 +186,7 @@ router.patch('/:id', requireParentOrAdmin, (req, res) => {
 // POST /api/recurring/run — trigger due recurring generation (parent/admin)
 router.post('/run', requireParentOrAdmin, (req, res) => {
   const limit = Number.parseInt(req.body?.limit || '25', 10);
-  const result = processDueRecurringRequests(Number.isInteger(limit) && limit > 0 ? limit : 25);
+  const result = processDueRecurringRequests(Number.isInteger(limit) && limit > 0 ? limit : 25, req.householdId);
   return res.json(result);
 });
 
