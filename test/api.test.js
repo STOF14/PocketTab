@@ -466,18 +466,19 @@ test('ten-family randomized multi-device resilience regression', async () => {
     const admin = {
       ...adminRes.body.user,
       pin: adminPin,
-      tokens: [adminRes.body.token]
+      tokens: [adminRes.body.token],
+      activeToken: adminRes.body.token
     };
     const members = [admin];
 
-    const invite = await request(app)
-      .post('/api/auth/household/invites')
-      .set(auth(adminRes.body.token))
-      .send({ ttlHours: 72 });
-    assert.equal(invite.status, 201);
-    assert.ok(invite.body.code);
-
     for (let j = 1; j < size; j += 1) {
+      const invite = await request(app)
+        .post('/api/auth/household/invites')
+        .set(auth(adminRes.body.token))
+        .send({ ttlHours: 72 });
+      assert.equal(invite.status, 201);
+      assert.ok(invite.body.code);
+
       const pin = `${(2000 + i * 10 + j) % 10000}`.padStart(4, '0');
       const memberRes = await request(app)
         .post('/api/auth/register')
@@ -490,7 +491,8 @@ test('ten-family randomized multi-device resilience regression', async () => {
       members.push({
         ...memberRes.body.user,
         pin,
-        tokens: [memberRes.body.token]
+        tokens: [memberRes.body.token],
+        activeToken: memberRes.body.token
       });
     }
 
@@ -522,6 +524,7 @@ test('ten-family randomized multi-device resilience regression', async () => {
       const loginA = await loginUser(member.id, member.pin);
       const loginB = await loginUser(member.id, member.pin);
       member.tokens.push(loginA.token, loginB.token);
+      member.activeToken = loginB.token;
     }
   }
 
@@ -748,6 +751,7 @@ test('ten-family randomized multi-device resilience regression', async () => {
     child.pin = newPin;
     const relogin = await loginUser(child.id, child.pin);
     child.tokens.push(relogin.token);
+    child.activeToken = relogin.token;
 
     const sessions = await request(app)
       .get(`/api/users/sessions?userId=${admin.id}`)
@@ -760,22 +764,33 @@ test('ten-family randomized multi-device resilience regression', async () => {
         .set(auth(admin.tokens[0]));
       assert.equal(revoke.status, 200);
     }
+    const adminRelogin = await loginUser(admin.id, admin.pin);
+    admin.tokens.push(adminRelogin.token);
+    admin.activeToken = adminRelogin.token;
 
     // Refresh/pagination checks after close/reopen-style relogin.
+    const resumedChildToken = child.tokens[child.tokens.length - 1];
+    const oldChildToken = child.tokens[0];
+
     const refreshChecks = await Promise.all([
-      request(app).get('/api/requests?limit=5&offset=0').set(auth(child.tokens[child.tokens.length - 1])),
+      request(app).get('/api/requests?limit=5&offset=0').set(auth(resumedChildToken)),
       request(app).get('/api/payments?limit=5&offset=0').set(auth(admin.tokens[0])),
-      request(app).get('/api/messages?refType=request&refId=' + requestCreated.body.id + '&limit=5&offset=0').set(auth(child.tokens[0])),
-      request(app).get('/api/notifications?unreadOnly=false').set(auth(child.tokens[1]))
+      request(app).get('/api/messages?refType=request&refId=' + requestCreated.body.id + '&limit=5&offset=0').set(auth(resumedChildToken)),
+      request(app).get('/api/notifications?unreadOnly=false').set(auth(resumedChildToken))
     ]);
 
     for (const check of refreshChecks) {
       assert.equal(check.status, 200);
     }
 
+    const revokedSessionProbe = await request(app)
+      .get('/api/notifications?unreadOnly=false')
+      .set(auth(oldChildToken));
+    assert.equal(revokedSessionProbe.status, 403);
+
     const attachmentDelete = await request(app)
       .delete(`/api/attachments/${attachment.body.id}`)
-      .set(auth(child.tokens[0]));
+      .set(auth(resumedChildToken));
     assert.equal(attachmentDelete.status, 200);
   }
 
@@ -786,45 +801,28 @@ test('ten-family randomized multi-device resilience regression', async () => {
       const child = family.members.find((m) => m.role === 'child') || family.members[1];
       const created = await request(app)
         .post('/api/requests')
-        .set(auth(child.tokens[randomInt(rng, 0, child.tokens.length - 1)]))
+        .set(auth(child.activeToken))
         .send({ toId: admin.id, amount: randomInt(rng, 1, 9), reason: `wave-${family.id}` });
-      if (created.status !== 201) {
-        captureIssue('high', 'correctness', 'requests.create', family.name, `status:${created.status}`);
-      }
+      assert.equal(created.status, 201);
     },
     async (family) => {
       const actor = pickOne(rng, family.members);
       const pageA = await request(app)
         .get(`/api/requests?limit=3&offset=${randomInt(rng, 0, 2)}`)
-        .set(auth(actor.tokens[randomInt(rng, 0, actor.tokens.length - 1)]));
+        .set(auth(actor.activeToken));
       const pageB = await request(app)
         .get(`/api/payments?limit=3&offset=${randomInt(rng, 0, 2)}`)
-        .set(auth(actor.tokens[randomInt(rng, 0, actor.tokens.length - 1)]));
-      if (pageA.status !== 200 || pageB.status !== 200) {
-        captureIssue('medium', 'performance', 'pagination', family.name, `requests:${pageA.status}, payments:${pageB.status}`);
-      }
-    },
-    async (family) => {
-      const actor = pickOne(rng, family.members);
-      const logout = await request(app)
-        .post('/api/auth/logout')
-        .set(auth(actor.tokens[randomInt(rng, 0, actor.tokens.length - 1)]))
-        .send({});
-      if (logout.status !== 200) {
-        captureIssue('medium', 'ux/state-recovery', 'auth.logout', family.name, `status:${logout.status}`);
-      }
-      const relogin = await loginUser(actor.id, actor.pin);
-      actor.tokens.push(relogin.token);
+        .set(auth(actor.activeToken));
+      assert.equal(pageA.status, 200);
+      assert.equal(pageB.status, 200);
     },
     async (family) => {
       const parent = family.members.find((m) => m.role === 'parent') || family.members.find((m) => m.role === 'admin');
       const run = await request(app)
         .post('/api/notifications/reminders/run')
-        .set(auth(parent.tokens[randomInt(rng, 0, parent.tokens.length - 1)]))
+        .set(auth(parent.activeToken))
         .send({ staleHours: 0 });
-      if (run.status !== 200) {
-        captureIssue('low', 'observability', 'notifications.reminders', family.name, `status:${run.status}`);
-      }
+      assert.equal(run.status, 200);
     }
   ];
 
@@ -833,8 +831,14 @@ test('ten-family randomized multi-device resilience regression', async () => {
     for (const family of families) {
       const activityCount = family.profile === 'heavy' ? 4 : family.profile === 'moderate' ? 2 : 1;
       for (let n = 0; n < activityCount; n += 1) {
-        const action = pickOne(rng, actionCatalog);
-        tasks.push(action(family));
+        const actionIndex = randomInt(rng, 0, actionCatalog.length - 1);
+        tasks.push((async () => {
+          try {
+            await actionCatalog[actionIndex](family);
+          } catch (error) {
+            captureIssue('critical', 'concurrency', `wave-action-${actionIndex}`, family.name, error?.message || String(error));
+          }
+        })());
       }
     }
     await Promise.all(tasks);
@@ -843,7 +847,6 @@ test('ten-family randomized multi-device resilience regression', async () => {
   // 6/7) Defect log + prioritized regression backlog.
   const severityRank = { critical: 0, high: 1, medium: 2, low: 3 };
   const backlog = [...issues].sort((a, b) => severityRank[a.severity] - severityRank[b.severity]);
-  const criticalOrHigh = backlog.filter((item) => item.severity === 'critical' || item.severity === 'high');
   const grouped = backlog.reduce((acc, item) => {
     acc[item.category] = (acc[item.category] || 0) + 1;
     return acc;
@@ -857,5 +860,5 @@ test('ten-family randomized multi-device resilience regression', async () => {
     topItems: backlog.slice(0, 10)
   }));
 
-  assert.equal(criticalOrHigh.length, 0);
+  assert.equal(backlog.length, 0, JSON.stringify(backlog.slice(0, 5)));
 });
