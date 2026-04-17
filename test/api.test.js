@@ -1203,3 +1203,587 @@ test('auth rate limit persists across app restarts', async () => {
     }
   }
 });
+
+test('invite lifecycle preview catches active used and expired codes', async () => {
+  const suffix = uniqueSuffix();
+  const adminRes = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `InviteLifecycle-Admin-${suffix}`,
+      pin: '1111',
+      createHousehold: true,
+      householdName: `Invite Lifecycle ${suffix}`
+    });
+  assert.equal(adminRes.status, 201);
+
+  const activeInvite = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(adminRes.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(activeInvite.status, 201);
+  assert.ok(activeInvite.body.code);
+
+  const activePreview = await request(app)
+    .get(`/api/auth/invites/${activeInvite.body.code}`);
+  assert.equal(activePreview.status, 200);
+  assert.equal(activePreview.body.code, activeInvite.body.code);
+  assert.equal(activePreview.body.household.id, adminRes.body.user.household_id);
+  assert.ok(Array.isArray(activePreview.body.members));
+  assert.ok(activePreview.body.members.some((member) => member.id === adminRes.body.user.id));
+
+  const activeLegacyLookup = await request(app)
+    .get(`/api/auth/users?inviteCode=${activeInvite.body.code}`);
+  assert.equal(activeLegacyLookup.status, 200);
+  assert.ok(activeLegacyLookup.body.length >= 1);
+
+  const joinedRes = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `InviteLifecycle-Join-${suffix}`, pin: '2222', inviteCode: activeInvite.body.code });
+  assert.equal(joinedRes.status, 201);
+
+  const usedPreview = await request(app)
+    .get(`/api/auth/invites/${activeInvite.body.code}`);
+  assert.equal(usedPreview.status, 410);
+  assert.match(usedPreview.body.error, /already used/i);
+
+  const usedLegacyLookup = await request(app)
+    .get(`/api/auth/users?inviteCode=${activeInvite.body.code}`);
+  assert.equal(usedLegacyLookup.status, 200);
+  assert.equal(usedLegacyLookup.body.length, 0);
+
+  const usedJoinAttempt = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `InviteLifecycle-Reuse-${suffix}`, pin: '3333', inviteCode: activeInvite.body.code });
+  assert.equal(usedJoinAttempt.status, 400);
+  assert.match(usedJoinAttempt.body.error, /already used/i);
+
+  const expiringInvite = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(adminRes.body.token))
+    .send({ ttlHours: 1 });
+  assert.equal(expiringInvite.status, 201);
+
+  db.prepare('UPDATE household_invites SET expires_at = ? WHERE id = ?')
+    .run(new Date(Date.now() - 60 * 1000).toISOString(), expiringInvite.body.id);
+
+  const expiredPreview = await request(app)
+    .get(`/api/auth/invites/${expiringInvite.body.code}`);
+  assert.equal(expiredPreview.status, 410);
+  assert.match(expiredPreview.body.error, /expired/i);
+
+  const expiredLegacyLookup = await request(app)
+    .get(`/api/auth/users?inviteCode=${expiringInvite.body.code}`);
+  assert.equal(expiredLegacyLookup.status, 200);
+  assert.equal(expiredLegacyLookup.body.length, 0);
+
+  const expiredJoinAttempt = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `InviteLifecycle-Expired-${suffix}`, pin: '4444', inviteCode: expiringInvite.body.code });
+  assert.equal(expiredJoinAttempt.status, 400);
+  assert.match(expiredJoinAttempt.body.error, /expired/i);
+});
+
+test('multi-device session revoke invalidates only one token at a time', async () => {
+  const user = await registerUser(`SessionEdge-${uniqueSuffix()}`, '7171');
+  const secondLogin = await loginUser(user.user.id, '7171');
+
+  const sessionList = await request(app)
+    .get('/api/users/sessions')
+    .set(auth(user.token));
+  assert.equal(sessionList.status, 200);
+  assert.ok(sessionList.body.length >= 2);
+
+  const newestSession = sessionList.body[0];
+  const revokeOne = await request(app)
+    .delete(`/api/users/sessions/${newestSession.id}`)
+    .set(auth(user.token));
+  assert.equal(revokeOne.status, 200);
+
+  const profileViaTokenA = await request(app)
+    .get('/api/users/me')
+    .set(auth(user.token));
+  const profileViaTokenB = await request(app)
+    .get('/api/users/me')
+    .set(auth(secondLogin.token));
+
+  const statusSet = [profileViaTokenA.status, profileViaTokenB.status].sort((a, b) => a - b);
+  assert.deepEqual(statusSet, [200, 403]);
+
+  const survivorToken = profileViaTokenA.status === 200 ? user.token : secondLogin.token;
+  const survivorSessions = await request(app)
+    .get('/api/users/sessions')
+    .set(auth(survivorToken));
+  assert.equal(survivorSessions.status, 200);
+  assert.ok(survivorSessions.body.length >= 1);
+});
+
+test('attachment payload boundaries enforce clear UX-safe errors', async () => {
+  const suffix = uniqueSuffix();
+  const sender = await registerUser(`Attachment-Sender-${suffix}`, '8181');
+  const receiver = await registerUser(`Attachment-Receiver-${suffix}`, '8282');
+
+  const requestRes = await request(app)
+    .post('/api/requests')
+    .set(auth(sender.token))
+    .send({ toId: receiver.user.id, amount: 12, reason: 'Attachment boundary setup' });
+  assert.equal(requestRes.status, 201);
+
+  const previousMaxAttachmentBytes = process.env.MAX_ATTACHMENT_BYTES;
+  process.env.MAX_ATTACHMENT_BYTES = '16';
+
+  try {
+    const exactBoundaryUpload = await request(app)
+      .post('/api/attachments')
+      .set(auth(sender.token))
+      .send({
+        refType: 'request',
+        refId: requestRes.body.id,
+        fileName: 'exact.bin',
+        mimeType: 'application/octet-stream',
+        dataBase64: Buffer.from('1234567890ABCDEF').toString('base64')
+      });
+    assert.equal(exactBoundaryUpload.status, 201);
+
+    const tooLargeUpload = await request(app)
+      .post('/api/attachments')
+      .set(auth(sender.token))
+      .send({
+        refType: 'request',
+        refId: requestRes.body.id,
+        fileName: 'oversize.bin',
+        mimeType: 'application/octet-stream',
+        dataBase64: Buffer.from('1234567890ABCDEFG').toString('base64')
+      });
+    assert.equal(tooLargeUpload.status, 400);
+    assert.match(tooLargeUpload.body.error, /exceeds max size/i);
+
+    const emptyPayloadUpload = await request(app)
+      .post('/api/attachments')
+      .set(auth(sender.token))
+      .send({
+        refType: 'request',
+        refId: requestRes.body.id,
+        fileName: 'empty.bin',
+        mimeType: 'application/octet-stream',
+        dataBase64: 'data:application/octet-stream;base64,'
+      });
+    assert.equal(emptyPayloadUpload.status, 400);
+    assert.match(emptyPayloadUpload.body.error, /payload is empty/i);
+  } finally {
+    if (typeof previousMaxAttachmentBytes === 'undefined') {
+      delete process.env.MAX_ATTACHMENT_BYTES;
+    } else {
+      process.env.MAX_ATTACHMENT_BYTES = previousMaxAttachmentBytes;
+    }
+  }
+});
+
+test('name normalization blocks invisible duplicate profiles', async () => {
+  const suffix = uniqueSuffix();
+
+  const trimmedBase = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `  Invisible-${suffix}  `, pin: '9090' });
+  assert.equal(trimmedBase.status, 201);
+
+  const caseVariant = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `invisible-${suffix}`, pin: '9191' });
+  assert.equal(caseVariant.status, 400);
+  assert.match(caseVariant.body.error, /already taken/i);
+
+  const firstLong = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `abcdefghijklmnopqrst-${suffix}-A`, pin: '9292' });
+  assert.equal(firstLong.status, 201);
+
+  const secondLongCollision = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `abcdefghijklmnopqrst-${suffix}-B`, pin: '9393' });
+  assert.equal(secondLongCollision.status, 400);
+  assert.match(secondLongCollision.body.error, /already taken/i);
+});
+
+test('everyday five-person family flow uses all major features', async () => {
+  const suffix = uniqueSuffix();
+
+  const adminRes = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `Daily-Admin-${suffix}`,
+      pin: '1111',
+      createHousehold: true,
+      householdName: `Daily Household ${suffix}`
+    });
+  assert.equal(adminRes.status, 201);
+
+  async function issueInviteAndJoin(name, pin) {
+    const inviteRes = await request(app)
+      .post('/api/auth/household/invites')
+      .set(auth(adminRes.body.token))
+      .send({ ttlHours: 72 });
+    assert.equal(inviteRes.status, 201);
+
+    const previewRes = await request(app)
+      .get(`/api/auth/invites/${inviteRes.body.code}`);
+    assert.equal(previewRes.status, 200);
+    assert.equal(previewRes.body.household.id, adminRes.body.user.household_id);
+
+    const joinRes = await request(app)
+      .post('/api/auth/register')
+      .send({ name, pin, inviteCode: inviteRes.body.code });
+    assert.equal(joinRes.status, 201);
+    return joinRes.body;
+  }
+
+  const parent = await issueInviteAndJoin(`Daily-Parent-${suffix}`, '2222');
+  const member = await issueInviteAndJoin(`Daily-Member-${suffix}`, '3333');
+  const childBudgeted = await issueInviteAndJoin(`Daily-KidA-${suffix}`, '4444');
+  const childGeneral = await issueInviteAndJoin(`Daily-KidB-${suffix}`, '5555');
+
+  const householdRes = await request(app)
+    .get('/api/auth/household')
+    .set(auth(adminRes.body.token));
+  assert.equal(householdRes.status, 200);
+  assert.equal(householdRes.body.memberCount, 5);
+
+  const householdUsers = await request(app)
+    .get(`/api/auth/users?householdId=${adminRes.body.user.household_id}`);
+  assert.equal(householdUsers.status, 200);
+  assert.equal(householdUsers.body.length, 5);
+
+  const promoteParent = await request(app)
+    .patch(`/api/users/${parent.user.id}/role`)
+    .set(auth(adminRes.body.token))
+    .send({ role: 'parent' });
+  assert.equal(promoteParent.status, 200);
+  assert.equal(promoteParent.body.role, 'parent');
+
+  const memberRoleSet = await request(app)
+    .patch(`/api/auth/household/members/${member.user.id}/role`)
+    .set(auth(adminRes.body.token))
+    .send({ role: 'member' });
+  assert.equal(memberRoleSet.status, 200);
+  assert.equal(memberRoleSet.body.member.role, 'member');
+
+  const membersAsParent = await request(app)
+    .get('/api/users/members')
+    .set(auth(parent.token));
+  assert.equal(membersAsParent.status, 200);
+  assert.equal(membersAsParent.body.length, 5);
+
+  const membersAsChildDenied = await request(app)
+    .get('/api/users/members')
+    .set(auth(childBudgeted.token));
+  assert.equal(membersAsChildDenied.status, 403);
+
+  const parentProfile = await request(app)
+    .get('/api/users/me')
+    .set(auth(parent.token));
+  assert.equal(parentProfile.status, 200);
+  assert.equal(parentProfile.body.role, 'parent');
+
+  const allowanceRes = await request(app)
+    .post('/api/allowances')
+    .set(auth(parent.token))
+    .send({ childId: childBudgeted.user.id, budget: 300, period: 'weekly', approvalThreshold: 60 });
+  assert.equal(allowanceRes.status, 201);
+
+  const allowanceList = await request(app)
+    .get('/api/allowances')
+    .set(auth(parent.token));
+  assert.equal(allowanceList.status, 200);
+  assert.ok(allowanceList.body.some((a) => a.id === allowanceRes.body.id));
+
+  const allowancePatch = await request(app)
+    .patch(`/api/allowances/${allowanceRes.body.id}`)
+    .set(auth(parent.token))
+    .send({ budget: 320, approvalThreshold: 55, active: true, period: 'weekly' });
+  assert.equal(allowancePatch.status, 200);
+  assert.equal(allowancePatch.body.approvalThreshold, 55);
+
+  const groceryRequest = await request(app)
+    .post('/api/requests')
+    .set(auth(childBudgeted.token))
+    .send({
+      toId: adminRes.body.user.id,
+      amount: 120,
+      reason: 'Weekly grocery run',
+      category: 'groceries',
+      tags: ['home', 'food']
+    });
+  assert.equal(groceryRequest.status, 201);
+  assert.equal(groceryRequest.body.status, 'pending_approval');
+
+  const approveGroceryRequest = await request(app)
+    .post(`/api/requests/${groceryRequest.body.id}/approve-child`)
+    .set(auth(parent.token));
+  assert.equal(approveGroceryRequest.status, 200);
+  assert.equal(approveGroceryRequest.body.status, 'pending');
+
+  const acceptGroceryRequest = await request(app)
+    .patch(`/api/requests/${groceryRequest.body.id}`)
+    .set(auth(adminRes.body.token))
+    .send({ status: 'accepted' });
+  assert.equal(acceptGroceryRequest.status, 200);
+  assert.equal(acceptGroceryRequest.body.status, 'accepted');
+
+  const groceryMessage = await request(app)
+    .post('/api/messages')
+    .set(auth(childBudgeted.token))
+    .send({
+      refType: 'request',
+      refId: groceryRequest.body.id,
+      text: 'Added lunch ingredients and staples for the week'
+    });
+  assert.equal(groceryMessage.status, 201);
+
+  const filteredMessages = await request(app)
+    .get(`/api/messages?refType=request&refId=${groceryRequest.body.id}&q=lunch`)
+    .set(auth(adminRes.body.token));
+  assert.equal(filteredMessages.status, 200);
+  assert.ok(filteredMessages.body.length >= 1);
+
+  const attachmentUpload = await request(app)
+    .post('/api/attachments')
+    .set(auth(childBudgeted.token))
+    .send({
+      refType: 'request',
+      refId: groceryRequest.body.id,
+      fileName: 'receipt.txt',
+      mimeType: 'text/plain',
+      dataBase64: Buffer.from('receipt-line-1\nreceipt-line-2').toString('base64')
+    });
+  assert.equal(attachmentUpload.status, 201);
+
+  const attachmentList = await request(app)
+    .get(`/api/attachments?refType=request&refId=${groceryRequest.body.id}`)
+    .set(auth(adminRes.body.token));
+  assert.equal(attachmentList.status, 200);
+  assert.ok(attachmentList.body.some((a) => a.id === attachmentUpload.body.id));
+
+  const attachmentDownload = await request(app)
+    .get(`/api/attachments/${attachmentUpload.body.id}/download`)
+    .set(auth(adminRes.body.token));
+  assert.equal(attachmentDownload.status, 200);
+  assert.equal(attachmentDownload.headers['content-type'], 'text/plain');
+
+  const attachmentDelete = await request(app)
+    .delete(`/api/attachments/${attachmentUpload.body.id}`)
+    .set(auth(adminRes.body.token));
+  assert.equal(attachmentDelete.status, 200);
+
+  const groceryPaymentPart = await request(app)
+    .post('/api/payments')
+    .set(auth(adminRes.body.token))
+    .send({ requestId: groceryRequest.body.id, amount: 70, message: 'First transfer for groceries', category: 'groceries' });
+  assert.equal(groceryPaymentPart.status, 201);
+
+  const confirmGroceryPaymentPart = await request(app)
+    .patch(`/api/payments/${groceryPaymentPart.body.id}`)
+    .set(auth(childBudgeted.token))
+    .send({ status: 'confirmed' });
+  assert.equal(confirmGroceryPaymentPart.status, 200);
+
+  const partiallySettledView = await request(app)
+    .get('/api/requests?status=partially_settled')
+    .set(auth(childBudgeted.token));
+  assert.equal(partiallySettledView.status, 200);
+  assert.ok(partiallySettledView.body.some((r) => r.id === groceryRequest.body.id));
+
+  const groceryPaymentFinal = await request(app)
+    .post('/api/payments')
+    .set(auth(adminRes.body.token))
+    .send({ requestId: groceryRequest.body.id, amount: 50, message: 'Final grocery transfer', category: 'groceries' });
+  assert.equal(groceryPaymentFinal.status, 201);
+
+  const confirmGroceryPaymentFinal = await request(app)
+    .patch(`/api/payments/${groceryPaymentFinal.body.id}`)
+    .set(auth(childBudgeted.token))
+    .send({ status: 'confirmed' });
+  assert.equal(confirmGroceryPaymentFinal.status, 200);
+
+  const snackPayment = await request(app)
+    .post('/api/payments')
+    .set(auth(member.token))
+    .send({ toId: childGeneral.user.id, amount: 18, message: 'Snack split', category: 'food', tags: ['snacks'] });
+  assert.equal(snackPayment.status, 201);
+
+  const disputeSnackPayment = await request(app)
+    .patch(`/api/payments/${snackPayment.body.id}`)
+    .set(auth(childGeneral.token))
+    .send({ status: 'disputed' });
+  assert.equal(disputeSnackPayment.status, 200);
+  assert.equal(disputeSnackPayment.body.status, 'disputed');
+
+  const disputedPayments = await request(app)
+    .get('/api/payments?status=disputed')
+    .set(auth(member.token));
+  assert.equal(disputedPayments.status, 200);
+  assert.ok(disputedPayments.body.some((p) => p.id === snackPayment.body.id));
+
+  const acceptedSettlementRequest = await request(app)
+    .post('/api/requests')
+    .set(auth(member.token))
+    .send({ toId: adminRes.body.user.id, amount: 40, reason: 'Fuel share', category: 'transport' });
+  assert.equal(acceptedSettlementRequest.status, 201);
+
+  const acceptSettlementRequest = await request(app)
+    .patch(`/api/requests/${acceptedSettlementRequest.body.id}`)
+    .set(auth(adminRes.body.token))
+    .send({ status: 'accepted' });
+  assert.equal(acceptSettlementRequest.status, 200);
+
+  const pendingReminderRequest = await request(app)
+    .post('/api/requests')
+    .set(auth(childGeneral.token))
+    .send({ toId: adminRes.body.user.id, amount: 9, reason: 'School lunch top-up', category: 'school' });
+  assert.equal(pendingReminderRequest.status, 201);
+
+  const runReminders = await request(app)
+    .post('/api/notifications/reminders/run')
+    .set(auth(parent.token))
+    .send({ staleHours: 0 });
+  assert.equal(runReminders.status, 200);
+  assert.ok(runReminders.body.created >= 1);
+
+  const childNotifications = await request(app)
+    .get('/api/notifications?unreadOnly=true')
+    .set(auth(childGeneral.token));
+  assert.equal(childNotifications.status, 200);
+
+  if (childNotifications.body.length > 0) {
+    const markOneRead = await request(app)
+      .patch(`/api/notifications/${childNotifications.body[0].id}/read`)
+      .set(auth(childGeneral.token));
+    assert.equal(markOneRead.status, 200);
+    assert.equal(markOneRead.body.is_read, true);
+  }
+
+  const markAllRead = await request(app)
+    .patch('/api/notifications/read-all')
+    .set(auth(childGeneral.token));
+  assert.equal(markAllRead.status, 200);
+
+  const recurringCreate = await request(app)
+    .post('/api/recurring')
+    .set(auth(parent.token))
+    .send({
+      fromId: parent.user.id,
+      toId: adminRes.body.user.id,
+      amount: 22,
+      reason: 'Weekly utilities contribution',
+      category: 'utilities',
+      tags: ['water', 'power'],
+      frequency: 'monthly',
+      nextRunAt: '2000-01-01T00:00:00.000Z'
+    });
+  assert.equal(recurringCreate.status, 201);
+
+  const recurringList = await request(app)
+    .get('/api/recurring')
+    .set(auth(parent.token));
+  assert.equal(recurringList.status, 200);
+  assert.ok(recurringList.body.some((rr) => rr.id === recurringCreate.body.id));
+
+  const recurringPatch = await request(app)
+    .patch(`/api/recurring/${recurringCreate.body.id}`)
+    .set(auth(parent.token))
+    .send({ frequency: 'weekly', reason: 'Weekly utilities contribution', nextRunAt: '2000-01-01T00:00:00.000Z' });
+  assert.equal(recurringPatch.status, 200);
+  assert.equal(recurringPatch.body.frequency, 'weekly');
+
+  const recurringRun = await request(app)
+    .post('/api/recurring/run')
+    .set(auth(parent.token))
+    .send({ limit: 10 });
+  assert.equal(recurringRun.status, 200);
+  assert.ok(recurringRun.body.generated >= 1);
+
+  const householdSettlements = await request(app)
+    .get('/api/settlements/net?scope=household')
+    .set(auth(parent.token));
+  assert.equal(householdSettlements.status, 200);
+  assert.ok(Array.isArray(householdSettlements.body.suggestedTransfers));
+
+  const childHouseholdSettlementsDenied = await request(app)
+    .get('/api/settlements/net?scope=household')
+    .set(auth(childGeneral.token));
+  assert.equal(childHouseholdSettlementsDenied.status, 403);
+
+  const childMineSettlements = await request(app)
+    .get('/api/settlements/net?scope=mine')
+    .set(auth(childGeneral.token));
+  assert.equal(childMineSettlements.status, 200);
+
+  const reportSummary = await request(app)
+    .get('/api/reports/summary?scope=household')
+    .set(auth(parent.token));
+  assert.equal(reportSummary.status, 200);
+  assert.ok(reportSummary.body.totals.requestCount >= 1);
+
+  const reportTrends = await request(app)
+    .get('/api/reports/trends?scope=household')
+    .set(auth(parent.token));
+  assert.equal(reportTrends.status, 200);
+
+  const reportCsv = await request(app)
+    .get('/api/reports/export.csv?scope=household')
+    .set(auth(parent.token));
+  assert.equal(reportCsv.status, 200);
+  assert.match(reportCsv.text, /type,id,fromId,toId/);
+
+  const reportPdf = await request(app)
+    .get('/api/reports/export.pdf?scope=household')
+    .set(auth(parent.token));
+  assert.equal(reportPdf.status, 200);
+
+  const secondParentLogin = await loginUser(parent.user.id, '2222');
+
+  const parentSessions = await request(app)
+    .get('/api/users/sessions')
+    .set(auth(parent.token));
+  assert.equal(parentSessions.status, 200);
+  assert.ok(parentSessions.body.length >= 2);
+
+  const revokeParentSession = await request(app)
+    .delete(`/api/users/sessions/${parentSessions.body[0].id}`)
+    .set(auth(parent.token));
+  assert.equal(revokeParentSession.status, 200);
+
+  const profileOriginalParentToken = await request(app)
+    .get('/api/users/me')
+    .set(auth(parent.token));
+  const profileSecondParentToken = await request(app)
+    .get('/api/users/me')
+    .set(auth(secondParentLogin.token));
+  const tokenStatusSet = [profileOriginalParentToken.status, profileSecondParentToken.status].sort((a, b) => a - b);
+  assert.deepEqual(tokenStatusSet, [200, 403]);
+
+  const logoutMember = await request(app)
+    .post('/api/auth/logout')
+    .set(auth(member.token));
+  assert.equal(logoutMember.status, 200);
+
+  const memberAfterLogout = await request(app)
+    .get('/api/users/me')
+    .set(auth(member.token));
+  assert.equal(memberAfterLogout.status, 403);
+
+  const recoveryRequest = await request(app)
+    .post('/api/users/pin-recovery-request')
+    .set(auth(childGeneral.token))
+    .send({ note: 'Forgot PIN after school run' });
+  assert.equal(recoveryRequest.status, 201);
+
+  const pinReset = await request(app)
+    .post(`/api/users/${childGeneral.user.id}/pin-reset`)
+    .set(auth(parent.token))
+    .send({ newPin: '5656' });
+  assert.equal(pinReset.status, 200);
+
+  const reloginAfterReset = await request(app)
+    .post('/api/auth/login')
+    .send({ userId: childGeneral.user.id, pin: '5656' });
+  assert.equal(reloginAfterReset.status, 200);
+});
