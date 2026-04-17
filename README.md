@@ -155,7 +155,8 @@ The app will be available at <http://localhost:3000>.
   - `JWT_SECRET=<strong-random-secret>`
   - `DB_PATH=<durable managed volume path>`
   - `TRUST_PROXY=1`
-- Render note: if `DB_PATH` is not set and a persistent disk is mounted at `/var/data`, PocketTab now defaults to `/var/data/pockettab.db`. Setting `DB_PATH` explicitly is still recommended.
+- Render note: if `DB_PATH` is not set and a persistent disk is mounted at `/var/data`, PocketTab defaults to `/var/data/pockettab.db`.
+- If no persistent disk is mounted, PocketTab falls back to `./pockettab.db` in the app directory (ephemeral storage). For durable data, mount a disk and set `DB_PATH` explicitly.
 - Run health monitoring against `GET /api/health`:
   - `HEALTH_URL=https://your-domain/api/health npm run monitor:health`
 - Run staged smoke tests before release:
