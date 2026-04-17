@@ -26,7 +26,9 @@ function toPublicRole(role) {
 router.get('/users', (req, res) => {
   let users = [];
   if (req.query.inviteCode) {
-    const invite = db.prepare('SELECT household_id FROM household_invites WHERE code = ?').get(String(req.query.inviteCode).trim());
+    const invite = db.prepare(
+      'SELECT household_id FROM household_invites WHERE code = ? AND used_at IS NULL AND expires_at > ?'
+    ).get(String(req.query.inviteCode).trim(), new Date().toISOString());
     users = invite
       ? db.prepare('SELECT id, household_id, name, role, created_at FROM users WHERE household_id = ? ORDER BY created_at ASC').all(invite.household_id)
       : [];
@@ -38,6 +40,47 @@ router.get('/users', (req, res) => {
     users = db.prepare('SELECT id, household_id, name, role, created_at FROM users ORDER BY created_at ASC').all();
   }
   res.json(users);
+});
+
+// GET /api/auth/invites/:code — validate invite and preview household/members
+router.get('/invites/:code', (req, res) => {
+  const code = String(req.params.code || '').trim();
+  if (!code) {
+    return res.status(400).json({ error: 'Invite code is required' });
+  }
+
+  const invite = db.prepare(
+    `SELECT hi.id, hi.household_id, hi.expires_at, hi.used_at, h.name as household_name
+     FROM household_invites hi
+     JOIN households h ON h.id = hi.household_id
+     WHERE hi.code = ?`
+  ).get(code);
+
+  if (!invite) {
+    return res.status(404).json({ error: 'Invite code not found' });
+  }
+
+  if (invite.used_at) {
+    return res.status(410).json({ error: 'Invite code already used' });
+  }
+
+  if (new Date(invite.expires_at).getTime() <= Date.now()) {
+    return res.status(410).json({ error: 'Invite code expired' });
+  }
+
+  const members = db.prepare(
+    'SELECT id, household_id, name, role, created_at FROM users WHERE household_id = ? ORDER BY created_at ASC'
+  ).all(invite.household_id);
+
+  return res.json({
+    code,
+    household: {
+      id: invite.household_id,
+      name: invite.household_name
+    },
+    expires_at: invite.expires_at,
+    members
+  });
 });
 
 // POST /api/auth/register — Create a new user

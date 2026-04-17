@@ -78,6 +78,111 @@
       margin-bottom: var(--pad);
     }
 
+    .onboarding-pips {
+      display: flex;
+      gap: 8px;
+      margin-bottom: var(--pad);
+    }
+
+    .onboarding-pips .pip {
+      width: 10px;
+      height: 10px;
+      border: var(--border);
+      background: var(--white);
+      display: inline-block;
+    }
+
+    .onboarding-pips .pip.active {
+      background: var(--navy);
+    }
+
+    .onboarding-step {
+      margin-bottom: 8px;
+    }
+
+    .onboarding-note {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 12px;
+      font-weight: 700;
+    }
+
+    .onboarding-warning {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin: -4px 0 12px;
+      line-height: 1.4;
+      border: var(--border);
+      padding: 8px;
+      background: var(--white);
+    }
+
+    .onboarding-actions {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .gate-cards {
+      display: grid;
+      gap: 8px;
+    }
+
+    .gate-card {
+      text-align: left;
+      display: block;
+      min-height: 0;
+      width: 100%;
+      background: var(--white);
+      color: var(--navy);
+    }
+
+    .gate-card .gate-title {
+      display: block;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 6px;
+    }
+
+    .gate-card .gate-copy {
+      display: block;
+      font-size: 12px;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 400;
+      line-height: 1.4;
+    }
+
+    .gate-card.selected,
+    .gate-card:hover {
+      background: var(--navy);
+      color: var(--white);
+    }
+
+    .join-confirmation {
+      border: var(--border);
+      padding: var(--pad-sm);
+      margin-top: 12px;
+      background: var(--white);
+    }
+
+    .join-confirmation h3 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+
+    .join-confirmation p {
+      font-size: 12px;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
     /* ===== FORM ELEMENTS ===== */
     label {
       display: block;
@@ -523,6 +628,14 @@
       font-size: 12px;
       text-transform: uppercase;
       letter-spacing: 1px;
+    }
+
+    .dashboard-empty {
+      display: block;
+    }
+
+    .dashboard-empty button {
+      max-width: 320px;
     }
 
     /* ===== RESPONSIVE: DESKTOP ===== */

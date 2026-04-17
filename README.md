@@ -4,13 +4,18 @@
 
 ## Features
 
-- **Multi-user support** — Unlimited users with PIN-based authentication
-- **Multi-device sync** — All data stored on the server, accessible from any device
-- **Money Requests** — Request money from other users, accept or reject incoming requests
-- **Payments** — Send payments to settle debts, with confirm/dispute workflow
-- **Chat Messages** — Message threads on every request and payment
-- **Dashboard** — See what you owe and what's owed to you at a glance
-- **Transaction History** — Full activity log of all requests and payments
+- **Household tenancy** — Multi-household support with invite-code onboarding and household-scoped access control
+- **Role-aware access** — `admin`, `parent`, and `member/child` role workflows
+- **PIN auth + session controls** — 4-digit PIN login, lockout on repeated failures, revocable sessions
+- **PIN recovery assistance** — In-household assisted reset flow (`pin-recovery-request`, parent/admin reset)
+- **Money requests** — Create, approve/reject, and partially settle request balances
+- **Recurring requests** — Weekly/monthly recurring rules with due-run generation
+- **Payments** — Send payments with confirm/dispute recipient workflow
+- **Settlement engine API** — Net balances and suggested minimal transfers (`/api/settlements/net`)
+- **Chat + attachments** — Message threads and file attachments on requests/payments
+- **Notifications + reminders** — In-app notifications and stale-item reminder generation
+- **Reporting** — Summary, trends, CSV export, and lightweight PDF-like export endpoints
+- **Dashboard + history** — At-a-glance balances and activity timeline
 
 ## Tech Stack
 
@@ -70,19 +75,32 @@ The app will be available at <http://localhost:3000>.
 │   ├── styles.css          # Frontend styles
 │   └── app.js              # Frontend app logic
 ├── scripts/
-│   └── backup-db.js         # Automated SQLite backup + retention pruning
+│   ├── backup-db.js         # Automated SQLite backup + retention pruning
+│   ├── check-backups.js     # Backup freshness/retention verification
+│   ├── monitor-health.js    # Health endpoint monitor script
+│   ├── restore-db.js        # DB restore utility
+│   ├── smoke-check.js       # Post-deploy smoke tests
+│   └── verify-backup-restore.js
 ├── server/
 │   ├── app.js               # Express app (exported for tests)
 │   ├── index.js             # Server entry point (listen)
 │   ├── db.js                # SQLite database setup
 │   ├── middleware/
-│   │   └── auth.js          # JWT authentication middleware
+│   │   ├── auth.js          # JWT authentication middleware
+│   │   ├── household.js     # Household tenancy guards
+│   │   └── observability.js # Structured logging and error handling
 │   └── routes/
 │       ├── auth.js          # Register, login, list users
+│       ├── allowances.js
+│       ├── attachments.js
 │       ├── requests.js      # Money request CRUD
 │       ├── payments.js      # Payment CRUD
 │       ├── messages.js      # Chat messages
-│       └── users.js         # Change PIN + reset endpoint
+│       ├── notifications.js
+│       ├── recurring.js
+│       ├── reports.js
+│       ├── settlements.js
+│       └── users.js         # PIN, role, sessions, recovery, reset endpoints
 ├── .github/
 │   └── workflows/
 │       └── ci.yml           # GitHub Actions: install + test on push/PR
@@ -99,26 +117,94 @@ The app will be available at <http://localhost:3000>.
 
 ## API Endpoints
 
+### Health
+
 | Method | Endpoint | Auth | Description |
 | ------ | -------- | ---- | ----------- |
-| GET | `/api/auth/users` | No | List all users |
-| POST | `/api/auth/register` | No | Create a new user |
+| GET | `/api/health` | No | Service/database health check |
+
+### Auth and Household
+
+| Method | Endpoint | Auth | Description |
+| ------ | -------- | ---- | ----------- |
+| GET | `/api/auth/users` | No | List users; supports `inviteCode` and `householdId` filters |
+| POST | `/api/auth/register` | No | Create user; supports `inviteCode`, or `createHousehold` + `householdName` |
 | POST | `/api/auth/login` | No | Login with PIN |
-| GET | `/api/requests` | Yes | List user's requests (`limit`/`offset` supported) |
-| POST | `/api/requests` | Yes | Create a money request |
-| PATCH | `/api/requests/:id` | Yes | Accept/reject a request |
-| GET | `/api/payments` | Yes | List user's payments (`limit`/`offset` supported) |
-| POST | `/api/payments` | Yes | Send a payment |
-| PATCH | `/api/payments/:id` | Yes | Confirm/dispute a payment |
-| GET | `/api/messages` | Yes | Get messages for a request/payment (`limit`/`offset` supported) |
-| POST | `/api/messages` | Yes | Send a chat message |
-| PATCH | `/api/users/pin` | Yes | Change PIN |
-| DELETE | `/api/users/reset-all` | Yes | Reset all data (only when `ALLOW_DATA_RESET=true`) |
+| POST | `/api/auth/logout` | Yes | Revoke current session |
+| GET | `/api/auth/invites/:code` | No | Validate invite and preview household/member list |
+| GET | `/api/auth/household` | Yes | Get current household details |
+| POST | `/api/auth/household/invites` | Yes (admin) | Create household join invite (`ttlHours`) |
+| PATCH | `/api/auth/household/members/:userId/role` | Yes (admin) | Set member role (`admin` or `member`) |
+
+### Users, PIN, Sessions
+
+| Method | Endpoint | Auth | Description |
+| ------ | -------- | ---- | ----------- |
+| GET | `/api/users/me` | Yes | Get current user profile |
+| GET | `/api/users/members` | Yes (parent/admin) | List household members |
+| PATCH | `/api/users/:id/role` | Yes (admin) | Set role (`admin`, `parent`, `child`) |
+| PATCH | `/api/users/pin` | Yes | Change own PIN |
+| POST | `/api/users/pin-recovery-request` | Yes | Request parent/admin PIN recovery help |
+| POST | `/api/users/:id/pin-reset` | Yes (parent/admin) | Reset another member's PIN |
+| GET | `/api/users/sessions` | Yes | List sessions for self (or `userId` when admin) |
+| DELETE | `/api/users/sessions/:id` | Yes | Revoke session (self or admin) |
+| DELETE | `/api/users/reset-all` | Yes (parent/admin) | Reset household data (only when `ALLOW_DATA_RESET=true`) |
+
+### Requests and Payments
+
+| Method | Endpoint | Auth | Description |
+| ------ | -------- | ---- | ----------- |
+| GET | `/api/requests` | Yes | List requests (`limit`/`offset` + filters/search) |
+| POST | `/api/requests` | Yes | Create money request |
+| PATCH | `/api/requests/:id` | Yes | Recipient accepts/rejects request |
+| POST | `/api/requests/:id/approve-child` | Yes (parent/admin) | Approve child request |
+| POST | `/api/requests/:id/reject-child` | Yes (parent/admin) | Reject child request |
+| GET | `/api/payments` | Yes | List payments (`limit`/`offset` + filters/search) |
+| POST | `/api/payments` | Yes | Send payment (optionally linked via `requestId`) |
+| PATCH | `/api/payments/:id` | Yes | Recipient confirms/disputes payment |
+
+### Messaging and Attachments
+
+| Method | Endpoint | Auth | Description |
+| ------ | -------- | ---- | ----------- |
+| GET | `/api/messages` | Yes | List messages for `refType` + `refId` |
+| POST | `/api/messages` | Yes | Post message to request/payment thread |
+| GET | `/api/attachments` | Yes | List attachments for `refType` + `refId` |
+| POST | `/api/attachments` | Yes | Upload base64 attachment |
+| GET | `/api/attachments/:id/download` | Yes | Download attachment |
+| DELETE | `/api/attachments/:id` | Yes | Delete attachment (owner or parent/admin) |
+
+### Notifications
+
+| Method | Endpoint | Auth | Description |
+| ------ | -------- | ---- | ----------- |
+| GET | `/api/notifications` | Yes | List notifications (`unreadOnly`, paging) |
+| PATCH | `/api/notifications/:id/read` | Yes | Mark one notification as read |
+| PATCH | `/api/notifications/read-all` | Yes | Mark all notifications as read |
+| POST | `/api/notifications/reminders/run` | Yes (parent/admin) | Generate stale pending reminders |
+
+### Recurring, Allowances, Settlements, Reports
+
+| Method | Endpoint | Auth | Description |
+| ------ | -------- | ---- | ----------- |
+| GET | `/api/recurring` | Yes | List recurring request rules |
+| POST | `/api/recurring` | Yes (parent/admin) | Create recurring rule |
+| PATCH | `/api/recurring/:id` | Yes (parent/admin) | Update recurring rule |
+| POST | `/api/recurring/run` | Yes (parent/admin) | Trigger recurring generation run |
+| GET | `/api/allowances` | Yes | List allowance rules |
+| POST | `/api/allowances` | Yes (parent/admin) | Create allowance rule |
+| PATCH | `/api/allowances/:id` | Yes (parent/admin) | Update allowance rule |
+| GET | `/api/settlements/net` | Yes | Net balances + suggested transfers (`scope=mine` or `scope=household`) |
+| GET | `/api/reports/summary` | Yes | Aggregate report summary |
+| GET | `/api/reports/trends` | Yes | Monthly trend + categories |
+| GET | `/api/reports/export.csv` | Yes | CSV export |
+| GET | `/api/reports/export.pdf` | Yes | Lightweight PDF-like export |
 
 ## Security Notes
 
 - In production (`NODE_ENV=production`), both `JWT_SECRET` and `PIN_PEPPER` are mandatory.
 - PIN hashes use bcrypt cost factor `12` minimum with server-side peppering, and legacy hashes are re-hashed on next successful login.
+- PIN login attempts are lockout-protected (`PIN_MAX_ATTEMPTS`, `PIN_LOCK_MINUTES`).
 - Message read/write now checks request/payment ownership before access.
 - Global and auth-specific rate limits are active on API routes and persisted in SQLite so counters survive restarts.
 
@@ -136,10 +222,22 @@ The app will be available at <http://localhost:3000>.
 - Daily-style backup with 30 retention: `npm run backup:db:daily`
 - Verify backup freshness/retention policy: `npm run verify:backups`
 - Restore from a backup file: `npm run restore:db -- /absolute/path/to/pockettab-YYYYMMDD-....db`
-- For Linux cron, run once per day at 02:15:
+- For Linux cron, run backup once per day at 02:15:
 
 ```bash
 15 2 * * * cd /path/to/PocketTab && npm run backup:db:daily >> /var/log/pockettab-backup.log 2>&1
+```
+
+- Verify backups shortly after backup and fail loudly to logs/mail/webhook:
+
+```bash
+25 2 * * * cd /path/to/PocketTab && npm run verify:backups >> /var/log/pockettab-backup-verify.log 2>&1 || logger -t pockettab-backup "backup verification failed"
+```
+
+- Optional webhook alert example when verification fails:
+
+```bash
+25 2 * * * cd /path/to/PocketTab && npm run verify:backups >> /var/log/pockettab-backup-verify.log 2>&1 || curl -fsS -X POST https://example-alert-webhook -H 'Content-Type: application/json' -d '{"service":"pockettab","event":"backup_verify_failed"}'
 ```
 
 #### Restore Procedure
@@ -178,12 +276,32 @@ The app will be available at <http://localhost:3000>.
 
 - Users are linked to a household (`users.household_id`) and core write operations are household-scoped.
 - New APIs:
+  - `GET /api/auth/invites/:code` — validate invite and preview household/members
   - `GET /api/auth/household` — current household details
-  - `POST /api/auth/household/invites` — create join invite (admin only)
+  - `POST /api/auth/household/invites` — create join invite (admin only, supports `ttlHours`)
   - `PATCH /api/auth/household/members/:userId/role` — assign household role (`admin` or `member`, admin only)
 - Registration supports:
   - `inviteCode` to join an existing household
   - `createHousehold: true` and optional `householdName` to start a new household
+- Invites are single-use and expire; backend rejects invalid/used/expired codes.
+
+### PIN Recovery (Assisted)
+
+- Child/member can request assistance: `POST /api/users/pin-recovery-request`.
+- Parent/admin can reset household member PIN: `POST /api/users/:id/pin-reset`.
+- Admin-only rule applies when resetting another admin PIN.
+
+## Current Product Gaps
+
+These are known limitations in the current product shape:
+
+- **No guest/observer role**: all users are active participants under `admin`/`parent`/`child` role model.
+- **No self-service forgot-PIN screen**: recovery currently depends on an authenticated parent/admin helper, not an unauthenticated login-reset flow.
+- **Flat household structure**: no sub-groups (for example, room/car/activity-level ledgers) within one household.
+- **One-to-one requests only**: group split requests are not modeled yet.
+- **Payment dispute is terminal**: `disputed` status exists, but there is no built-in mediation/escalation/reopen workflow.
+- **Settlement suggestions are API-first**: `/api/settlements/net` exists, but dashboard UI does not yet present guided settlement flows.
+- **Invite lifecycle visibility is limited**: expiry is shown when generated, but there is no dedicated endpoint/UI for historical invite usage tracking.
 
 ### Frontend Runtime Network Config (Optional)
 

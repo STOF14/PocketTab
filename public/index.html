@@ -38,32 +38,81 @@
       </div>
 
       <!-- Step 2: Create New User -->
-        <div id="auth-create" class="hidden">
-          <h2>Create Profile</h2>
+      <div id="auth-create" class="hidden">
+        <h2>Set Up Profile</h2>
+        <div class="onboarding-pips" id="onboarding-pips" aria-hidden="true">
+          <span class="pip active" data-step="1"></span>
+          <span class="pip" data-step="2"></span>
+          <span class="pip" data-step="3"></span>
+        </div>
+
+        <div id="create-step-identity" class="onboarding-step">
           <div class="form-group">
-            <label for="invite-code">Household Invite Code (optional)</label>
-            <input type="text" id="invite-code" maxlength="32" placeholder="Join existing household" autocomplete="off">
-          </div>
-          <div class="form-group" style="margin-top:-8px;">
-            <label><input type="checkbox" id="create-household"> Create a new household</label>
-          </div>
-          <div class="form-group">
-            <label for="new-name">Name</label>
+            <label for="new-name">Display Name</label>
             <input type="text" id="new-name" maxlength="20" placeholder="Your name" autocomplete="off">
-          <div class="error-msg hidden" id="name-error"></div>
+            <div class="error-msg hidden" id="name-error"></div>
+          </div>
+          <div class="form-group">
+            <label for="new-pin">Set PIN (4 digits)</label>
+            <input type="password" id="new-pin" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" placeholder="4-digit PIN" autocomplete="off">
+            <div class="error-msg hidden" id="pin-error"></div>
+          </div>
+          <div class="form-group">
+            <label for="confirm-pin">Confirm PIN</label>
+            <input type="password" id="confirm-pin" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" placeholder="Confirm PIN" autocomplete="off">
+            <div class="error-msg hidden" id="confirm-error"></div>
+          </div>
+          <p class="onboarding-warning">If you forget this PIN, a household parent/admin must reset it for you.</p>
+          <button class="btn-full btn-navy" id="btn-identity-next">Continue</button>
         </div>
-        <div class="form-group">
-          <label for="new-pin">Set PIN (4 digits)</label>
-          <input type="password" id="new-pin" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" placeholder="4-digit PIN" autocomplete="off">
-          <div class="error-msg hidden" id="pin-error"></div>
+
+        <div id="create-step-gate" class="onboarding-step hidden">
+          <p class="onboarding-note">How would you like to continue?</p>
+          <div class="gate-cards">
+            <button type="button" class="gate-card" id="gate-start-household" data-path="new">
+              <span class="gate-title">Start A New Household</span>
+              <span class="gate-copy">Create a household and invite members.</span>
+            </button>
+            <button type="button" class="gate-card" id="gate-join-household" data-path="join">
+              <span class="gate-title">Join With Invite Code</span>
+              <span class="gate-copy">Use an invite code from someone in your household.</span>
+            </button>
+          </div>
+          <div class="onboarding-actions">
+            <button class="btn-full" id="btn-gate-back">Back</button>
+            <button class="btn-full btn-navy" id="btn-gate-next" disabled>Continue</button>
+          </div>
         </div>
-        <div class="form-group">
-          <label for="confirm-pin">Confirm PIN</label>
-          <input type="password" id="confirm-pin" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" placeholder="Confirm PIN" autocomplete="off">
-          <div class="error-msg hidden" id="confirm-error"></div>
+
+        <div id="create-step-path" class="onboarding-step hidden">
+          <div id="path-new-household" class="path-panel hidden">
+            <div class="form-group">
+              <label for="household-name">Household Name</label>
+              <input type="text" id="household-name" maxlength="80" placeholder="e.g. The Ndlovu Household" autocomplete="off">
+            </div>
+            <button class="btn-full btn-navy" id="btn-complete-new">Create Household</button>
+          </div>
+
+          <div id="path-join-household" class="path-panel hidden">
+            <div class="form-group">
+              <label for="invite-code">Invite Code</label>
+              <input type="text" id="invite-code" maxlength="32" placeholder="Enter invite code" autocomplete="off">
+              <div class="error-msg hidden" id="invite-error"></div>
+            </div>
+            <button class="btn-full" id="btn-verify-invite" style="margin-bottom: 8px;">Verify Invite</button>
+
+            <div id="join-confirmation" class="join-confirmation hidden">
+              <h3>Confirm Household</h3>
+              <p id="join-confirmation-copy"></p>
+              <ul id="join-member-list" class="user-list" style="cursor: default; margin-bottom: 8px;"></ul>
+              <button class="btn-full btn-navy" id="btn-complete-join">Join Household</button>
+            </div>
+          </div>
+
+          <button class="btn-full" id="btn-path-back" style="margin-top: 8px;">Back</button>
         </div>
-        <button class="btn-full btn-navy" id="btn-save-user" style="margin-bottom: 8px;">Create</button>
-        <button class="btn-full" id="btn-back-login">Back</button>
+
+        <button class="btn-full" id="btn-back-login" style="margin-top: 8px;">Back To Login</button>
         <div class="error-msg hidden" id="create-confirmation" style="margin-top: 8px;"></div>
       </div>
     </div>
@@ -115,6 +164,11 @@
               <div class="metric-label">Latest Activity</div>
               <div id="metric-latest" style="font-size: 13px; margin-top: 8px;">No activity yet</div>
             </div>
+          </div>
+
+          <div id="dashboard-empty-state" class="empty-state dashboard-empty hidden" style="margin-top: 16px; text-align: left;">
+            <div id="dashboard-empty-copy">No requests yet.</div>
+            <button class="btn-full btn-navy" id="btn-dashboard-empty-action" style="margin-top: 12px;">Get Started</button>
           </div>
         </div>
 

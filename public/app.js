@@ -120,6 +120,7 @@
     var cachedUsers = [];
     var cachedRequests = [];
     var cachedPayments = [];
+    var cachedHousehold = null;
 
     /** Load users from server */
     async function loadUsers() {
@@ -145,6 +146,15 @@
         cachedPayments = await api('GET', '/payments');
       } catch (e) {
         cachedPayments = [];
+      }
+    }
+
+    /** Load current household details from server (requires auth) */
+    async function loadHousehold() {
+      try {
+        cachedHousehold = await api('GET', '/auth/household');
+      } catch (e) {
+        cachedHousehold = null;
       }
     }
 
@@ -175,6 +185,11 @@
     // ===== STATE =====
     var currentUser = null;
     var selectedLoginUser = null;
+    var onboardingState = {
+      step: 1,
+      path: null,
+      joinPreview: null
+    };
 
     // ===== DOM REFERENCES =====
     var authScreen = document.getElementById('auth-screen');
@@ -216,10 +231,14 @@
       appScreen.classList.add('hidden');
       currentUser = null;
       selectedLoginUser = null;
+      cachedHousehold = null;
       authToken = null;
       localStorage.removeItem('pt_token');
       localStorage.removeItem('pt_user');
       await loadUsers();
+      resetCreateFlow();
+      authCreate.classList.add('hidden');
+      authSelect.classList.remove('hidden');
       renderUserList();
       document.getElementById('pin-login').classList.add('hidden');
       document.getElementById('login-pin').value = '';
@@ -303,19 +322,106 @@
       switchTab('dashboard');
     }
 
-    /** Create a new user — calls server */
-    async function createUser() {
+    function resetCreateFlow() {
+      onboardingState.step = 1;
+      onboardingState.path = null;
+      onboardingState.joinPreview = null;
+
+      document.getElementById('new-name').value = '';
+      document.getElementById('new-pin').value = '';
+      document.getElementById('confirm-pin').value = '';
+      document.getElementById('invite-code').value = '';
+      document.getElementById('household-name').value = '';
+
+      hideError('name-error');
+      hideError('pin-error');
+      hideError('confirm-error');
+      hideError('invite-error');
+      hideError('create-confirmation');
+
+      document.getElementById('join-member-list').innerHTML = '';
+      document.getElementById('join-confirmation-copy').textContent = '';
+      document.getElementById('join-confirmation').classList.add('hidden');
+
+      setGatePath(null);
+      renderCreateStep();
+    }
+
+    function setGatePath(pathValue) {
+      onboardingState.path = pathValue;
+
+      var startCard = document.getElementById('gate-start-household');
+      var joinCard = document.getElementById('gate-join-household');
+      startCard.classList.toggle('selected', pathValue === 'new');
+      joinCard.classList.toggle('selected', pathValue === 'join');
+
+      document.getElementById('btn-gate-next').disabled = !pathValue;
+    }
+
+    function renderCreateStep() {
+      document.getElementById('create-step-identity').classList.toggle('hidden', onboardingState.step !== 1);
+      document.getElementById('create-step-gate').classList.toggle('hidden', onboardingState.step !== 2);
+      document.getElementById('create-step-path').classList.toggle('hidden', onboardingState.step !== 3);
+
+      document.querySelectorAll('#onboarding-pips .pip').forEach(function(pip) {
+        var step = Number(pip.getAttribute('data-step'));
+        pip.classList.toggle('active', step === onboardingState.step);
+      });
+
+      var showNewHouseholdPath = onboardingState.path === 'new';
+      var showJoinPath = onboardingState.path === 'join';
+
+      document.getElementById('path-new-household').classList.toggle('hidden', !showNewHouseholdPath);
+      document.getElementById('path-join-household').classList.toggle('hidden', !showJoinPath);
+
+      if (showNewHouseholdPath && !document.getElementById('household-name').value.trim()) {
+        var typedName = document.getElementById('new-name').value.trim();
+        if (typedName) {
+          document.getElementById('household-name').value = typedName + "'s Household";
+        }
+      }
+
+      if (showJoinPath) {
+        var confirmation = document.getElementById('join-confirmation');
+        if (!onboardingState.joinPreview) {
+          confirmation.classList.add('hidden');
+        } else {
+          confirmation.classList.remove('hidden');
+          var memberList = document.getElementById('join-member-list');
+          memberList.innerHTML = '';
+
+          onboardingState.joinPreview.members.forEach(function(member) {
+            var item = document.createElement('li');
+            item.style.cursor = 'default';
+            var publicRole = member.role === 'admin' ? 'Admin' : 'Member';
+            item.textContent = member.name + ' (' + publicRole + ')';
+            memberList.appendChild(item);
+          });
+
+          var memberCount = onboardingState.joinPreview.members.length;
+          var householdName = onboardingState.joinPreview.householdName || 'this household';
+          var memberCopy = memberCount === 1
+            ? '1 existing member'
+            : memberCount + ' existing members';
+          var expiryCopy = onboardingState.joinPreview.expiresAt
+            ? ' Invite expires ' + formatTime(onboardingState.joinPreview.expiresAt) + '.'
+            : '';
+
+          document.getElementById('join-confirmation-copy').textContent =
+            'You are joining ' + householdName + ' with ' + memberCopy + '.' + expiryCopy;
+        }
+      }
+    }
+
+    function validateIdentityStep() {
       var name = document.getElementById('new-name').value.trim();
       var pin = document.getElementById('new-pin').value.trim();
       var confirmPin = document.getElementById('confirm-pin').value.trim();
-      var inviteCode = document.getElementById('invite-code').value.trim();
-      var createHousehold = document.getElementById('create-household').checked;
       var valid = true;
 
       hideError('name-error');
       hideError('pin-error');
       hideError('confirm-error');
-      hideError('create-confirmation');
 
       if (!name || name.length < 1) {
         showError('name-error', 'Name is required');
@@ -332,14 +438,106 @@
         valid = false;
       }
 
-      if (!valid) return;
+      if (!valid) {
+        return null;
+      }
+
+      return { name: name, pin: pin };
+    }
+
+    function nextCreateStepFromIdentity() {
+      var identity = validateIdentityStep();
+      if (!identity) {
+        return;
+      }
+
+      onboardingState.step = 2;
+      renderCreateStep();
+    }
+
+    function nextCreateStepFromGate() {
+      if (!onboardingState.path) {
+        return;
+      }
+
+      onboardingState.step = 3;
+      renderCreateStep();
+    }
+
+    async function verifyInviteCode() {
+      var inviteCode = document.getElementById('invite-code').value.trim();
+      hideError('invite-error');
+
+      if (!inviteCode) {
+        showError('invite-error', 'Invite code is required');
+        onboardingState.joinPreview = null;
+        renderCreateStep();
+        return;
+      }
 
       try {
+        var preview = await api('GET', '/auth/invites/' + encodeURIComponent(inviteCode));
+        var members = Array.isArray(preview?.members) ? preview.members : [];
+
+        if (members.length === 0) {
+          onboardingState.joinPreview = null;
+          showError('invite-error', 'Invite code is invalid');
+          renderCreateStep();
+          return;
+        }
+
+        onboardingState.joinPreview = {
+          code: inviteCode,
+          members: members,
+          expiresAt: preview.expires_at,
+          householdName: preview.household?.name || null
+        };
+        renderCreateStep();
+      } catch (e) {
+        onboardingState.joinPreview = null;
+        showError('invite-error', e.message || 'Invite code is invalid or expired');
+        renderCreateStep();
+      }
+    }
+
+    /** Create a new user from onboarding flow — calls server */
+    async function completeOnboarding(pathKind) {
+      var identity = validateIdentityStep();
+      if (!identity) {
+        onboardingState.step = 1;
+        renderCreateStep();
+        return;
+      }
+
+      hideError('create-confirmation');
+
+      try {
+        var payload = {
+          name: identity.name,
+          pin: identity.pin
+        };
+
+        if (pathKind === 'new') {
+          var householdName = document.getElementById('household-name').value.trim();
+          payload.createHousehold = true;
+          payload.householdName = householdName || (identity.name + "'s Household");
+        }
+
+        if (pathKind === 'join') {
+          var inviteCode = onboardingState.joinPreview?.code || document.getElementById('invite-code').value.trim();
+          if (!inviteCode) {
+            showError('invite-error', 'Invite code is required');
+            return;
+          }
+          payload.inviteCode = inviteCode;
+        }
+
         var result = await api('POST', '/auth/register', {
-          name: name,
-          pin: pin,
-          inviteCode: inviteCode || undefined,
-          createHousehold: createHousehold
+          name: payload.name,
+          pin: payload.pin,
+          inviteCode: payload.inviteCode || undefined,
+          createHousehold: payload.createHousehold,
+          householdName: payload.householdName
         });
 
         // Auto-login after registration
@@ -348,19 +546,14 @@
         localStorage.setItem('pt_token', result.token);
         localStorage.setItem('pt_user', JSON.stringify(result.user));
 
-        if (createHousehold && result.user && result.user.role === 'admin') {
-          showError('create-confirmation', 'Profile created. You are the admin for this household.');
+        if (pathKind === 'new' && result.user && result.user.role === 'admin') {
           alert('Household created. You are the admin for this household.');
         }
 
         // Clear form and go back to login view
+        resetCreateFlow();
         authCreate.classList.add('hidden');
         authSelect.classList.remove('hidden');
-        document.getElementById('new-name').value = '';
-        document.getElementById('new-pin').value = '';
-        document.getElementById('confirm-pin').value = '';
-        document.getElementById('invite-code').value = '';
-        document.getElementById('create-household').checked = false;
 
         await loadUsers();
         renderUserList();
@@ -368,7 +561,11 @@
         // Enter app directly
         enterApp();
       } catch (e) {
-        showError('name-error', e.message || 'Failed to create user');
+        if (pathKind === 'join') {
+          showError('invite-error', e.message || 'Failed to join household');
+        } else {
+          showError('create-confirmation', e.message || 'Failed to create profile');
+        }
       }
     }
 
@@ -409,7 +606,7 @@
     // ===== REFRESH ALL APP DATA =====
     async function refreshApp() {
       if (!currentUser) return;
-      await Promise.all([loadUsers(), loadRequests(), loadPayments()]);
+      await Promise.all([loadUsers(), loadRequests(), loadPayments(), loadHousehold()]);
       refreshDashboard();
       refreshRequests();
       refreshPayTab();
@@ -478,6 +675,49 @@
       } else {
         latestEl.textContent = 'No activity yet';
       }
+
+      var hasAnyTransactions = requests.length > 0 || payments.length > 0;
+      var emptyState = document.getElementById('dashboard-empty-state');
+      var emptyCopy = document.getElementById('dashboard-empty-copy');
+      var emptyAction = document.getElementById('btn-dashboard-empty-action');
+      if (!emptyState || !emptyCopy || !emptyAction) {
+        return;
+      }
+
+      if (hasAnyTransactions) {
+        emptyState.classList.add('hidden');
+        return;
+      }
+
+      var memberCount = Number(cachedHousehold?.memberCount || 0);
+      var shouldPromptInvite = currentUser.role === 'admin' && memberCount <= 1;
+
+      if (shouldPromptInvite) {
+        emptyCopy.textContent = 'No requests yet. Add someone to your household to get started.';
+        emptyAction.textContent = 'Generate Invite Code';
+        emptyAction.setAttribute('data-action', 'invite');
+      } else {
+        emptyCopy.textContent = 'No requests yet. Send your first request.';
+        emptyAction.textContent = 'Send Your First Request';
+        emptyAction.setAttribute('data-action', 'request');
+      }
+
+      emptyState.classList.remove('hidden');
+    }
+
+    async function handleDashboardEmptyAction() {
+      var button = document.getElementById('btn-dashboard-empty-action');
+      var action = button?.getAttribute('data-action');
+
+      if (action === 'invite') {
+        switchTab('settings');
+        await generateHouseholdInvite();
+        return;
+      }
+
+      switchTab('requests');
+      switchSubTab('new-request');
+      document.getElementById('req-user').focus();
     }
 
     // ===== REQUESTS TAB =====
@@ -1008,17 +1248,16 @@
       window.addEventListener('offline', updateConnectivityFromNavigator);
 
       document.getElementById('btn-create-user').addEventListener('click', function() {
+        resetCreateFlow();
         authSelect.classList.add('hidden');
         authCreate.classList.remove('hidden');
         document.getElementById('new-name').focus();
       });
 
       document.getElementById('btn-back-login').addEventListener('click', function() {
+        resetCreateFlow();
         authCreate.classList.add('hidden');
         authSelect.classList.remove('hidden');
-        hideError('name-error');
-        hideError('pin-error');
-        hideError('confirm-error');
       });
 
       document.getElementById('btn-login').addEventListener('click', attemptLogin);
@@ -1026,9 +1265,36 @@
         if (e.key === 'Enter') attemptLogin();
       });
 
-      document.getElementById('btn-save-user').addEventListener('click', createUser);
+      document.getElementById('btn-identity-next').addEventListener('click', nextCreateStepFromIdentity);
+      document.getElementById('btn-gate-back').addEventListener('click', function() {
+        onboardingState.step = 1;
+        renderCreateStep();
+      });
+      document.getElementById('btn-gate-next').addEventListener('click', nextCreateStepFromGate);
+      document.getElementById('btn-path-back').addEventListener('click', function() {
+        onboardingState.joinPreview = null;
+        hideError('invite-error');
+        onboardingState.step = 2;
+        renderCreateStep();
+      });
+      document.getElementById('gate-start-household').addEventListener('click', function() {
+        setGatePath('new');
+      });
+      document.getElementById('gate-join-household').addEventListener('click', function() {
+        setGatePath('join');
+      });
+      document.getElementById('btn-complete-new').addEventListener('click', function() {
+        completeOnboarding('new');
+      });
+      document.getElementById('btn-verify-invite').addEventListener('click', verifyInviteCode);
+      document.getElementById('btn-complete-join').addEventListener('click', function() {
+        completeOnboarding('join');
+      });
       document.getElementById('confirm-pin').addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') createUser();
+        if (e.key === 'Enter') nextCreateStepFromIdentity();
+      });
+      document.getElementById('invite-code').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') verifyInviteCode();
       });
 
       document.getElementById('btn-logout').addEventListener('click', function() { showAuth(); });
@@ -1051,6 +1317,7 @@
       document.getElementById('btn-generate-invite').addEventListener('click', generateHouseholdInvite);
       document.getElementById('btn-copy-invite').addEventListener('click', copyHouseholdInviteCode);
       document.getElementById('btn-reset-data').addEventListener('click', resetAllData);
+      document.getElementById('btn-dashboard-empty-action').addEventListener('click', handleDashboardEmptyAction);
     }
 
     // ===== START =====
