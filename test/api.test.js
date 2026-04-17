@@ -691,6 +691,7 @@ test('ten-family randomized multi-device resilience regression', async () => {
         category: 'recurring',
         tags: ['auto'],
         frequency: 'weekly',
+        // Intentionally in the past so the run endpoint deterministically generates items in this stress suite.
         nextRunAt: '2000-01-01T00:00:00.000Z'
       });
     assert.equal(recurring.status, 201);
@@ -763,6 +764,7 @@ test('ten-family randomized multi-device resilience regression', async () => {
         .delete(`/api/users/sessions/${revokable.id}`)
         .set(auth(admin.tokens[0]));
       assert.equal(revoke.status, 200);
+      assert.equal(revoke.body.message, 'Session revoked');
     }
     const adminRelogin = await loginUser(admin.id, admin.pin);
     admin.tokens.push(adminRelogin.token);
@@ -775,7 +777,7 @@ test('ten-family randomized multi-device resilience regression', async () => {
     const refreshChecks = await Promise.all([
       request(app).get('/api/requests?limit=5&offset=0').set(auth(resumedChildToken)),
       request(app).get('/api/payments?limit=5&offset=0').set(auth(admin.tokens[0])),
-      request(app).get('/api/messages?refType=request&refId=' + requestCreated.body.id + '&limit=5&offset=0').set(auth(resumedChildToken)),
+      request(app).get(`/api/messages?refType=request&refId=${requestCreated.body.id}&limit=5&offset=0`).set(auth(resumedChildToken)),
       request(app).get('/api/notifications?unreadOnly=false').set(auth(resumedChildToken))
     ]);
 
@@ -845,8 +847,7 @@ test('ten-family randomized multi-device resilience regression', async () => {
   }
 
   // 6/7) Defect log + prioritized regression backlog.
-  const severityRank = { critical: 0, high: 1, medium: 2, low: 3 };
-  const backlog = [...issues].sort((a, b) => severityRank[a.severity] - severityRank[b.severity]);
+  const backlog = [...issues];
   const grouped = backlog.reduce((acc, item) => {
     acc[item.category] = (acc[item.category] || 0) + 1;
     return acc;
