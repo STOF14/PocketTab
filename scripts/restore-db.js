@@ -2,9 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
+const { resolveDbPath } = require('../server/db-path');
 
 function resolveTargetDbPath() {
-  return process.env.DB_PATH || path.join(__dirname, '..', 'pockettab.db');
+  return resolveDbPath();
 }
 
 function resolveBackupPath() {

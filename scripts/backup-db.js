@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
+const { resolveDbPath } = require('../server/db-path');
 
 function timestampForFilename(date) {
   const pad = (n, len = 2) => String(n).padStart(len, '0');
@@ -19,7 +20,7 @@ function parseKeepCount(value) {
 }
 
 async function backupDatabase() {
-  const dbPath = process.env.DB_PATH || path.join(__dirname, '..', 'pockettab.db');
+  const dbPath = resolveDbPath();
   const backupDir = process.env.DB_BACKUP_DIR || path.join(__dirname, '..', 'backups');
   const keepCount = parseKeepCount(process.env.DB_BACKUP_KEEP);
 

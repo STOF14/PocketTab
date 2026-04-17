@@ -1,11 +1,8 @@
 const Database = require('better-sqlite3');
-const path = require('path');
+const { ensureDbDirectory, resolveDbPath } = require('./db-path');
 
-if (process.env.NODE_ENV === 'production' && !process.env.DB_PATH) {
-  throw new Error('DB_PATH is required when NODE_ENV=production to ensure durable storage configuration');
-}
-
-const dbPath = process.env.DB_PATH || path.join(__dirname, '..', 'pockettab.db');
+const dbPath = resolveDbPath();
+ensureDbDirectory(dbPath);
 const db = new Database(dbPath);
 
 // Enable WAL mode for better concurrent read performance

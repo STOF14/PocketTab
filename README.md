@@ -45,7 +45,7 @@ The app will be available at <http://localhost:3000>.
 | `PORT` | `3000` | Server port |
 | `JWT_SECRET` | dev fallback in non-production | Secret key for JWT tokens (required in production) |
 | `NODE_ENV` | `development` | Set to `production` to enforce strict secret handling |
-| `DB_PATH` | `./pockettab.db` | SQLite database file path override |
+| `DB_PATH` | `./pockettab.db` (dev), auto `/var/data/pockettab.db` on Render production | SQLite database file path override |
 | `ALLOW_DATA_RESET` | `false` | Set `true` to enable `DELETE /api/users/reset-all` |
 | `SLOW_REQUEST_MS` | `1000` | Warn-level logging threshold for slow HTTP requests |
 | `JSON_BODY_LIMIT` | `1mb` in production, else `10mb` | Max JSON request payload size |
@@ -155,6 +155,7 @@ The app will be available at <http://localhost:3000>.
   - `JWT_SECRET=<strong-random-secret>`
   - `DB_PATH=<durable managed volume path>`
   - `TRUST_PROXY=1`
+- Render note: if `DB_PATH` is not set and a persistent disk is mounted at `/var/data`, PocketTab now defaults to `/var/data/pockettab.db`. Setting `DB_PATH` explicitly is still recommended.
 - Run health monitoring against `GET /api/health`:
   - `HEALTH_URL=https://your-domain/api/health npm run monitor:health`
 - Run staged smoke tests before release:
