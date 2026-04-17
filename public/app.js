@@ -9,6 +9,7 @@
      *   GET    /api/auth/users         — List all users (public)
      *   POST   /api/auth/register      — Create user (returns JWT)
      *   POST   /api/auth/login         — Login (returns JWT)
+    *   POST   /api/auth/household/invites — Create household invite code
      *   GET    /api/requests           — List requests for current user
      *   POST   /api/requests           — Create a request
      *   PATCH  /api/requests/:id       — Accept/reject a request
@@ -295,6 +296,10 @@
       authScreen.classList.add('hidden');
       appScreen.classList.remove('hidden');
       document.getElementById('header-user-name').textContent = currentUser.name;
+      var roleLabel = document.getElementById('header-role-label');
+      if (roleLabel) {
+        roleLabel.textContent = currentUser.role === 'admin' ? 'ADMIN' : 'MEMBER';
+      }
       switchTab('dashboard');
     }
 
@@ -310,6 +315,7 @@
       hideError('name-error');
       hideError('pin-error');
       hideError('confirm-error');
+      hideError('create-confirmation');
 
       if (!name || name.length < 1) {
         showError('name-error', 'Name is required');
@@ -341,6 +347,11 @@
         currentUser = result.user;
         localStorage.setItem('pt_token', result.token);
         localStorage.setItem('pt_user', JSON.stringify(result.user));
+
+        if (createHousehold && result.user && result.user.role === 'admin') {
+          showError('create-confirmation', 'Profile created. You are the admin for this household.');
+          alert('Household created. You are the admin for this household.');
+        }
 
         // Clear form and go back to login view
         authCreate.classList.add('hidden');
@@ -879,12 +890,82 @@
       }
 
       try {
-        await api('PATCH', '/users/pin', { oldPin: oldPin, newPin: newPin });
+        var result = await api('PATCH', '/users/pin', { oldPin: oldPin, newPin: newPin });
         document.getElementById('settings-old-pin').value = '';
         document.getElementById('settings-new-pin').value = '';
+
+        if (result && result.sessionRevoked) {
+          localStorage.removeItem('pt_token');
+          localStorage.removeItem('pt_user');
+          authToken = null;
+          currentUser = null;
+          alert('PIN updated. Please sign in again.');
+          showAuth();
+          return;
+        }
+
         showError('settings-pin-error', 'PIN updated successfully');
       } catch (e) {
         showError('settings-pin-error', e.message || 'Failed to update PIN');
+      }
+    }
+
+    async function copyTextToClipboard(value) {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+        return;
+      }
+
+      var tempInput = document.createElement('input');
+      tempInput.value = value;
+      document.body.appendChild(tempInput);
+      tempInput.select();
+      document.execCommand('copy');
+      document.body.removeChild(tempInput);
+    }
+
+    /** Generate a household invite code — calls server */
+    async function generateHouseholdInvite() {
+      var ttlRaw = document.getElementById('settings-invite-ttl').value;
+      var ttlHours = Number.parseInt(ttlRaw, 10);
+
+      hideError('settings-invite-error');
+
+      if (!Number.isInteger(ttlHours) || ttlHours < 1 || ttlHours > 168) {
+        showError('settings-invite-error', 'Invite expiry must be between 1 and 168 hours');
+        return;
+      }
+
+      try {
+        var invite = await api('POST', '/auth/household/invites', { ttlHours: ttlHours });
+        document.getElementById('settings-invite-code').value = invite.code;
+        document.getElementById('settings-invite-meta').textContent = 'Expires ' + formatTime(invite.expires_at);
+
+        try {
+          await copyTextToClipboard(invite.code);
+          showError('settings-invite-error', 'Invite code generated and copied');
+        } catch (copyErr) {
+          showError('settings-invite-error', 'Invite code generated. Copy it manually below');
+        }
+      } catch (e) {
+        showError('settings-invite-error', e.message || 'Failed to generate invite code');
+      }
+    }
+
+    async function copyHouseholdInviteCode() {
+      var code = document.getElementById('settings-invite-code').value.trim();
+      hideError('settings-invite-error');
+
+      if (!code) {
+        showError('settings-invite-error', 'Generate an invite code first');
+        return;
+      }
+
+      try {
+        await copyTextToClipboard(code);
+        showError('settings-invite-error', 'Invite code copied');
+      } catch (e) {
+        showError('settings-invite-error', 'Unable to copy automatically. Copy the code manually');
       }
     }
 
@@ -967,6 +1048,8 @@
       document.getElementById('btn-send-request').addEventListener('click', sendRequest);
       document.getElementById('btn-send-payment').addEventListener('click', sendPayment);
       document.getElementById('btn-change-pin').addEventListener('click', changePin);
+      document.getElementById('btn-generate-invite').addEventListener('click', generateHouseholdInvite);
+      document.getElementById('btn-copy-invite').addEventListener('click', copyHouseholdInviteCode);
       document.getElementById('btn-reset-data').addEventListener('click', resetAllData);
     }
 

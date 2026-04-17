@@ -10,6 +10,10 @@ const { getReference, canAccessReference } = require('../services/reference');
 const router = express.Router();
 router.use(authenticateToken);
 
+function notFound(res) {
+  return res.status(404).json({ error: 'Not found' });
+}
+
 const attachmentsDir = process.env.ATTACHMENTS_DIR || path.join(__dirname, '..', '..', 'uploads', 'attachments');
 fs.mkdirSync(attachmentsDir, { recursive: true });
 
@@ -36,11 +40,11 @@ router.get('/', (req, res) => {
 
   const ref = getReference(refType, refId);
   if (!ref) {
-    return res.status(404).json({ error: `${refType} not found` });
+    return notFound(res);
   }
 
   if (!canAccessReference(ref, req.userId)) {
-    return res.status(403).json({ error: 'You cannot access attachments for this item' });
+    return notFound(res);
   }
 
   const paging = parsePaging(req.query);
@@ -79,11 +83,11 @@ router.post('/', (req, res) => {
 
   const ref = getReference(refType, refId);
   if (!ref) {
-    return res.status(404).json({ error: `${refType} not found` });
+    return notFound(res);
   }
 
   if (!canAccessReference(ref, req.userId)) {
-    return res.status(403).json({ error: 'You cannot attach files to this item' });
+    return notFound(res);
   }
 
   const buffer = decodeBase64Data(dataBase64);
@@ -118,16 +122,16 @@ router.post('/', (req, res) => {
 router.get('/:id/download', (req, res) => {
   const row = db.prepare('SELECT * FROM attachments WHERE id = ?').get(req.params.id);
   if (!row) {
-    return res.status(404).json({ error: 'Attachment not found' });
+    return notFound(res);
   }
 
   const ref = getReference(row.ref_type, row.ref_id);
   if (!ref || !canAccessReference(ref, req.userId)) {
-    return res.status(403).json({ error: 'You cannot access this attachment' });
+    return notFound(res);
   }
 
   if (!fs.existsSync(row.file_path)) {
-    return res.status(404).json({ error: 'Attachment file missing on server' });
+    return notFound(res);
   }
 
   res.setHeader('Content-Type', row.mime_type || 'application/octet-stream');
@@ -139,12 +143,12 @@ router.get('/:id/download', (req, res) => {
 router.delete('/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM attachments WHERE id = ?').get(req.params.id);
   if (!row) {
-    return res.status(404).json({ error: 'Attachment not found' });
+    return notFound(res);
   }
 
   const ref = getReference(row.ref_type, row.ref_id);
   if (!ref || !canAccessReference(ref, req.userId)) {
-    return res.status(403).json({ error: 'You cannot access this attachment' });
+    return notFound(res);
   }
 
   if (row.user_id !== req.userId && !['parent', 'admin'].includes(req.userRole)) {

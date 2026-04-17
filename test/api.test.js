@@ -4,14 +4,18 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const request = require('supertest');
+const bcrypt = require('bcryptjs');
+const fs = require('fs');
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.PIN_PEPPER = 'test-pin-pepper-0123456789abcdef0123456789abcdef';
 process.env.DB_PATH = path.join(os.tmpdir(), `pockettab-test-${crypto.randomUUID()}.db`);
 process.env.ALLOW_DATA_RESET = 'false';
 process.env.DISABLE_RATE_LIMIT = 'true';
 
 const app = require('../server/app');
+const db = require('../server/db');
 
 function uniqueSuffix() {
   return Math.random().toString(36).slice(2, 8);
@@ -57,6 +61,50 @@ function randomInt(rng, min, max) {
 
 function pickOne(rng, list) {
   return list[Math.floor(rng() * list.length)];
+}
+
+const serverRoot = path.join(__dirname, '..', 'server') + path.sep;
+
+function clearServerRequireCache() {
+  for (const modulePath of Object.keys(require.cache)) {
+    if (modulePath.startsWith(serverRoot)) {
+      delete require.cache[modulePath];
+    }
+  }
+}
+
+function loadIsolatedApp(envOverrides) {
+  const previous = new Map();
+
+  for (const [key, value] of Object.entries(envOverrides)) {
+    previous.set(key, process.env[key]);
+    process.env[key] = String(value);
+  }
+
+  clearServerRequireCache();
+  const isolatedApp = require('../server/app');
+  const isolatedDb = require('../server/db');
+
+  return {
+    app: isolatedApp,
+    cleanup() {
+      try {
+        isolatedDb.close();
+      } catch (err) {
+        // Ignore close errors in tests.
+      }
+
+      clearServerRequireCache();
+
+      for (const [key, oldValue] of previous.entries()) {
+        if (typeof oldValue === 'undefined') {
+          delete process.env[key];
+        } else {
+          process.env[key] = oldValue;
+        }
+      }
+    }
+  };
 }
 
 test('family of 4 full advanced feature suite', async () => {
@@ -136,7 +184,7 @@ test('family of 4 full advanced feature suite', async () => {
   const outsiderMessageAccess = await request(app)
     .get(`/api/messages?refType=request&refId=${reqTeenToMom.body.id}`)
     .set(auth(family.kid.token));
-  assert.equal(outsiderMessageAccess.status, 403);
+  assert.equal(outsiderMessageAccess.status, 404);
 
   // Linked payments with partial settlement progression.
   const paymentPart1 = await request(app)
@@ -330,6 +378,8 @@ test('family of 4 full advanced feature suite', async () => {
     .post('/api/auth/login')
     .send({ userId: family.kid.user.id, pin: '9999' });
   assert.equal(lockout.status, 423);
+  assert.equal(typeof lockout.body.retryAfter, 'number');
+  assert.ok(lockout.body.retryAfter > 0);
 
   const recoveryRequest = await request(app)
     .post('/api/users/pin-recovery-request')
@@ -403,6 +453,25 @@ test('multi-family isolation with household invites', async () => {
     .post('/api/auth/register')
     .send({ name: `FamilyA-Child-${suffix}`, pin: '2222', inviteCode: createInviteRes.body.code });
   assert.equal(familyAChild.status, 201);
+
+  const childCreatesInviteRes = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(familyAChild.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(childCreatesInviteRes.status, 403);
+
+  const updateChildRoleByAdmin = await request(app)
+    .patch(`/api/auth/household/members/${familyAChild.body.user.id}/role`)
+    .set(auth(familyAAdmin.token))
+    .send({ role: 'member' });
+  assert.equal(updateChildRoleByAdmin.status, 200);
+  assert.equal(updateChildRoleByAdmin.body.member.role, 'member');
+
+  const updateRoleByChildDenied = await request(app)
+    .patch(`/api/auth/household/members/${familyAAdmin.user.id}/role`)
+    .set(auth(familyAChild.body.token))
+    .send({ role: 'member' });
+  assert.equal(updateRoleByChildDenied.status, 403);
 
   const familyBAdmin = await request(app)
     .post('/api/auth/register')
@@ -639,7 +708,7 @@ test('ten-family randomized multi-device resilience regression', async () => {
     const deniedMsgRead = await request(app)
       .get(`/api/messages?refType=request&refId=${requestCreated.body.id}`)
       .set(auth(outsider.tokens[0]));
-    assert.equal(deniedMsgRead.status, 403);
+    assert.equal(deniedMsgRead.status, 404);
 
     const attachment = await request(app)
       .post('/api/attachments')
@@ -862,4 +931,275 @@ test('ten-family randomized multi-device resilience regression', async () => {
   }));
 
   assert.equal(backlog.length, 0, JSON.stringify(backlog.slice(0, 5)));
+});
+
+test('message access uses indistinguishable not-found responses', async () => {
+  const suffix = uniqueSuffix();
+  const admin = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `MsgAdmin-${suffix}`, pin: '1111', createHousehold: true, householdName: `Msg Household ${suffix}` });
+  assert.equal(admin.status, 201);
+
+  const inviteOne = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(admin.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(inviteOne.status, 201);
+
+  const child = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `MsgChild-${suffix}`, pin: '2222', inviteCode: inviteOne.body.code });
+  assert.equal(child.status, 201);
+
+  const inviteTwo = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(admin.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(inviteTwo.status, 201);
+
+  const outsider = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `MsgOutsider-${suffix}`, pin: '3333', inviteCode: inviteTwo.body.code });
+  assert.equal(outsider.status, 201);
+
+  const createdRequest = await request(app)
+    .post('/api/requests')
+    .set(auth(child.body.token))
+    .send({ toId: admin.body.user.id, amount: 5, reason: 'Message policy check' });
+  assert.equal(createdRequest.status, 201);
+
+  const deniedRead = await request(app)
+    .get(`/api/messages?refType=request&refId=${createdRequest.body.id}`)
+    .set(auth(outsider.body.token));
+  assert.equal(deniedRead.status, 404);
+  assert.deepEqual(deniedRead.body, { error: 'Not found' });
+
+  const missingRead = await request(app)
+    .get(`/api/messages?refType=request&refId=${crypto.randomUUID()}`)
+    .set(auth(outsider.body.token));
+  assert.equal(missingRead.status, 404);
+  assert.deepEqual(missingRead.body, { error: 'Not found' });
+});
+
+test('cross-household probes return 404 for protected resources', async () => {
+  const suffix = uniqueSuffix();
+  const familyAAdmin = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `ProbeA-Admin-${suffix}`, pin: '1111', createHousehold: true, householdName: `Probe Household A ${suffix}` });
+  assert.equal(familyAAdmin.status, 201);
+
+  const inviteRes = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(familyAAdmin.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(inviteRes.status, 201);
+
+  const familyAChild = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `ProbeA-Child-${suffix}`, pin: '2222', inviteCode: inviteRes.body.code });
+  assert.equal(familyAChild.status, 201);
+
+  const familyBAdmin = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `ProbeB-Admin-${suffix}`, pin: '3333', createHousehold: true, householdName: 'Probe Family B' });
+  assert.equal(familyBAdmin.status, 201);
+
+  const reqA = await request(app)
+    .post('/api/requests')
+    .set(auth(familyAAdmin.body.token))
+    .send({ toId: familyAChild.body.user.id, amount: 9, reason: 'probe request' });
+  assert.equal(reqA.status, 201);
+
+  const payA = await request(app)
+    .post('/api/payments')
+    .set(auth(familyAAdmin.body.token))
+    .send({ toId: familyAChild.body.user.id, amount: 4, message: 'probe payment' });
+  assert.equal(payA.status, 201);
+
+  const msgA = await request(app)
+    .post('/api/messages')
+    .set(auth(familyAAdmin.body.token))
+    .send({ refType: 'request', refId: reqA.body.id, text: 'probe message' });
+  assert.equal(msgA.status, 201);
+
+  const attachmentA = await request(app)
+    .post('/api/attachments')
+    .set(auth(familyAAdmin.body.token))
+    .send({
+      refType: 'request',
+      refId: reqA.body.id,
+      fileName: 'probe.txt',
+      mimeType: 'text/plain',
+      dataBase64: Buffer.from('probe-data').toString('base64')
+    });
+  assert.equal(attachmentA.status, 201);
+
+  const requestProbe = await request(app)
+    .patch(`/api/requests/${reqA.body.id}`)
+    .set(auth(familyBAdmin.body.token))
+    .send({ status: 'accepted' });
+  assert.equal(requestProbe.status, 404);
+
+  const paymentProbe = await request(app)
+    .patch(`/api/payments/${payA.body.id}`)
+    .set(auth(familyBAdmin.body.token))
+    .send({ status: 'confirmed' });
+  assert.equal(paymentProbe.status, 404);
+
+  const messageProbe = await request(app)
+    .get(`/api/messages?refType=request&refId=${reqA.body.id}`)
+    .set(auth(familyBAdmin.body.token));
+  assert.equal(messageProbe.status, 404);
+
+  const attachmentProbe = await request(app)
+    .get(`/api/attachments/${attachmentA.body.id}/download`)
+    .set(auth(familyBAdmin.body.token));
+  assert.equal(attachmentProbe.status, 404);
+});
+
+test('login rejects non-json content type with 415', async () => {
+  const res = await request(app)
+    .post('/api/auth/login')
+    .set('Content-Type', 'text/plain')
+    .send('userId=abc&pin=1234');
+
+  assert.equal(res.status, 415);
+  assert.match(res.body.error, /Unsupported Media Type/i);
+});
+
+test('structured logs never include request body fields', async () => {
+  const marker = `redaction-marker-${uniqueSuffix()}`;
+  const captured = [];
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const originalError = console.error;
+
+  console.log = (line, ...rest) => {
+    if (typeof line === 'string') captured.push(line);
+    if (typeof originalLog === 'function') originalLog(line, ...rest);
+  };
+  console.warn = (line, ...rest) => {
+    if (typeof line === 'string') captured.push(line);
+    if (typeof originalWarn === 'function') originalWarn(line, ...rest);
+  };
+  console.error = (line, ...rest) => {
+    if (typeof line === 'string') captured.push(line);
+    if (typeof originalError === 'function') originalError(line, ...rest);
+  };
+
+  try {
+    const registerRes = await request(app)
+      .post('/api/auth/register')
+      .send({
+        name: `Logger-${uniqueSuffix()}`,
+        pin: '1234',
+        sensitiveProbe: marker
+      });
+    assert.equal(registerRes.status, 201);
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+    console.error = originalError;
+  }
+
+  const requestLogs = captured.filter((line) => {
+    if (typeof line !== 'string' || !line.includes('"type":"http_request"')) {
+      return false;
+    }
+
+    try {
+      const payload = JSON.parse(line);
+      return payload.path === '/api/auth/register';
+    } catch (err) {
+      return false;
+    }
+  });
+
+  assert.ok(requestLogs.length >= 1);
+  const combined = requestLogs.join('\n');
+  assert.equal(combined.includes(marker), false);
+  assert.equal(combined.includes('sensitiveProbe'), false);
+  assert.equal(combined.includes('"pin":'), false);
+});
+
+test('legacy PIN hashes are rehashed on successful login', async () => {
+  const suffix = uniqueSuffix();
+  const registration = await registerUser(`Legacy-${suffix}`, '5555');
+  const legacyHash = bcrypt.hashSync('5555', 10);
+
+  db.prepare('UPDATE users SET pin_hash = ?, pin_hash_needs_rehash = 1 WHERE id = ?').run(legacyHash, registration.user.id);
+
+  const loginRes = await request(app)
+    .post('/api/auth/login')
+    .send({ userId: registration.user.id, pin: '5555' });
+  assert.equal(loginRes.status, 200);
+
+  const row = db.prepare('SELECT pin_hash, pin_hash_needs_rehash FROM users WHERE id = ?').get(registration.user.id);
+  assert.equal(row.pin_hash_needs_rehash, 0);
+  assert.ok(bcrypt.getRounds(row.pin_hash) >= 12);
+  assert.equal(bcrypt.compareSync(`5555${process.env.PIN_PEPPER}`, row.pin_hash), true);
+});
+
+test('pin change response instructs client to clear token and relogin', async () => {
+  const user = await registerUser(`PinRotate-${uniqueSuffix()}`, '1212');
+  const changeRes = await request(app)
+    .patch('/api/users/pin')
+    .set(auth(user.token))
+    .send({ oldPin: '1212', newPin: '3434' });
+
+  assert.equal(changeRes.status, 200);
+  assert.equal(changeRes.body.sessionRevoked, true);
+  assert.equal(changeRes.body.nextAction, 'clear_token_and_redirect_to_login');
+});
+
+test('auth rate limit persists across app restarts', async () => {
+  const isolatedDbPath = path.join(os.tmpdir(), `pockettab-rate-limit-${crypto.randomUUID()}.db`);
+  const baseEnv = {
+    NODE_ENV: 'development',
+    JWT_SECRET: 'rate-limit-test-secret',
+    PIN_PEPPER: 'rate-limit-pepper-0123456789abcdef0123456789abcdef',
+    DB_PATH: isolatedDbPath,
+    DISABLE_RATE_LIMIT: 'false',
+    RATE_LIMIT_WINDOW_MS: '600000',
+    AUTH_RATE_LIMIT_MAX: '2',
+    GLOBAL_RATE_LIMIT_MAX: '1000'
+  };
+
+  const firstBoot = loadIsolatedApp(baseEnv);
+  try {
+    const first = await request(firstBoot.app)
+      .post('/api/auth/login')
+      .send({ userId: 'missing-user', pin: '0000' });
+    const second = await request(firstBoot.app)
+      .post('/api/auth/login')
+      .send({ userId: 'missing-user', pin: '0000' });
+    const limited = await request(firstBoot.app)
+      .post('/api/auth/login')
+      .send({ userId: 'missing-user', pin: '0000' });
+
+    assert.notEqual(first.status, 429);
+    assert.notEqual(second.status, 429);
+    assert.equal(limited.status, 429);
+  } finally {
+    firstBoot.cleanup();
+  }
+
+  const secondBoot = loadIsolatedApp(baseEnv);
+  try {
+    const stillLimited = await request(secondBoot.app)
+      .post('/api/auth/login')
+      .send({ userId: 'missing-user', pin: '0000' });
+    assert.equal(stillLimited.status, 429);
+  } finally {
+    secondBoot.cleanup();
+    if (fs.existsSync(isolatedDbPath)) {
+      fs.unlinkSync(isolatedDbPath);
+    }
+    if (fs.existsSync(`${isolatedDbPath}-wal`)) {
+      fs.unlinkSync(`${isolatedDbPath}-wal`);
+    }
+    if (fs.existsSync(`${isolatedDbPath}-shm`)) {
+      fs.unlinkSync(`${isolatedDbPath}-shm`);
+    }
+  }
 });

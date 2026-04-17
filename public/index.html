@@ -64,6 +64,7 @@
         </div>
         <button class="btn-full btn-navy" id="btn-save-user" style="margin-bottom: 8px;">Create</button>
         <button class="btn-full" id="btn-back-login">Back</button>
+        <div class="error-msg hidden" id="create-confirmation" style="margin-top: 8px;"></div>
       </div>
     </div>
   </div>
@@ -75,6 +76,7 @@
       <span class="logo">PocketTab</span>
       <div class="user-info">
         <span id="header-user-name"></span>
+        <span id="header-role-label" style="font-size: 12px; text-transform: uppercase; letter-spacing: 1px; border: 2px solid var(--ink); padding: 2px 6px;"></span>
         <button id="btn-logout">Logout</button>
       </div>
     </header>
@@ -216,6 +218,22 @@
           <div class="settings-section">
             <h3>All Users</h3>
             <ul class="user-list" id="settings-user-list" style="cursor: default;"></ul>
+          </div>
+
+          <div class="settings-section">
+            <h3>Invite To Household</h3>
+            <div class="form-group">
+              <label for="settings-invite-ttl">Invite Expiry (Hours)</label>
+              <input type="number" id="settings-invite-ttl" min="1" max="168" step="1" value="24" inputmode="numeric">
+            </div>
+            <button class="btn-full" id="btn-generate-invite" style="margin-bottom: 8px;">Generate Invite Code</button>
+            <div class="form-group" style="margin-top: 8px;">
+              <label for="settings-invite-code">Latest Invite Code</label>
+              <input type="text" id="settings-invite-code" readonly placeholder="Generate an invite code first">
+            </div>
+            <button class="btn-full" id="btn-copy-invite" style="margin-bottom: 8px;">Copy Invite Code</button>
+            <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px;" id="settings-invite-meta"></div>
+            <div class="error-msg hidden" id="settings-invite-error" style="margin-top: 8px;"></div>
           </div>
 
           <div class="settings-section">

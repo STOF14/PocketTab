@@ -4,10 +4,14 @@ const db = require('../db');
 const { authenticateToken } = require('../middleware/auth');
 const { parsePaging, toAmountCents, sanitizeTags, parseDateInput, nowIso } = require('../services/utils');
 const { createNotifications } = require('../services/notifications');
-const { areUsersInSameHousehold } = require('../services/households');
+const { requireSameHousehold } = require('../middleware/household');
 
 const router = express.Router();
 router.use(authenticateToken);
+
+function notFound(res) {
+  return res.status(404).json({ error: 'Not found' });
+}
 
 function shapePayment(row) {
   return {
@@ -123,7 +127,7 @@ router.get('/', (req, res) => {
 });
 
 // POST /api/payments — Send a payment (optionally linked to requestId)
-router.post('/', (req, res) => {
+router.post('/', requireSameHousehold((req) => req.body?.toId), (req, res) => {
   const { toId, amount, message, category, tags, requestId } = req.body || {};
 
   const amountCents = toAmountCents(amount);
@@ -142,7 +146,7 @@ router.post('/', (req, res) => {
     ).get(requestId, req.householdId);
 
     if (!linkedRequest) {
-      return res.status(404).json({ error: 'Linked request not found' });
+      return notFound(res);
     }
 
     if (!['accepted', 'partially_settled'].includes(linkedRequest.status)) {
@@ -150,7 +154,7 @@ router.post('/', (req, res) => {
     }
 
     if (req.userId !== linkedRequest.to_id) {
-      return res.status(403).json({ error: 'Only the debtor can create a payment linked to this request' });
+      return notFound(res);
     }
 
     recipientId = linkedRequest.from_id;
@@ -168,9 +172,6 @@ router.post('/', (req, res) => {
   const targetUser = db.prepare('SELECT id FROM users WHERE id = ?').get(recipientId);
   if (!targetUser) {
     return res.status(404).json({ error: 'Target user not found' });
-  }
-  if (!areUsersInSameHousehold(req.userId, recipientId)) {
-    return res.status(403).json({ error: 'Payments are only allowed within the same household' });
   }
 
   if (recipientId === req.userId) {
@@ -246,11 +247,11 @@ router.patch('/:id', (req, res) => {
   ).get(req.params.id, req.householdId);
 
   if (!payment) {
-    return res.status(404).json({ error: 'Payment not found' });
+    return notFound(res);
   }
 
   if (payment.to_id !== req.userId) {
-    return res.status(403).json({ error: 'Only the recipient can confirm or dispute' });
+    return notFound(res);
   }
 
   if (payment.status !== 'sent') {

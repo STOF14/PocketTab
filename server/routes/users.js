@@ -1,5 +1,4 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
 const db = require('../db');
 const {
   authenticateToken,
@@ -11,6 +10,7 @@ const {
 const { createNotifications, getParentAndAdminIds } = require('../services/notifications');
 const { isAdmin } = require('../services/roles');
 const crypto = require('crypto');
+const { hashPin, verifyPin } = require('../services/pin-security');
 
 const router = express.Router();
 router.use(authenticateToken);
@@ -67,7 +67,7 @@ router.patch('/:id/role', requireRoles(['admin']), (req, res) => {
 
 // PATCH /api/users/pin — Change the current user's PIN
 router.patch('/pin', (req, res) => {
-  const { oldPin, newPin } = req.body;
+  const { oldPin, newPin } = req.body ?? {};
 
   if (!oldPin || !newPin) {
     return res.status(400).json({ error: 'Old and new PIN required' });
@@ -82,15 +82,21 @@ router.patch('/pin', (req, res) => {
     return res.status(404).json({ error: 'User not found' });
   }
 
-  if (!bcrypt.compareSync(oldPin, user.pin_hash)) {
+  if (!verifyPin(oldPin, user.pin_hash).matched) {
     return res.status(401).json({ error: 'Current PIN is incorrect' });
   }
 
-  const newHash = bcrypt.hashSync(newPin, 10);
-  db.prepare('UPDATE users SET pin_hash = ?, failed_login_attempts = 0, locked_until = NULL WHERE id = ?').run(newHash, req.userId);
+  const newHash = hashPin(newPin);
+  db.prepare(
+    'UPDATE users SET pin_hash = ?, pin_hash_needs_rehash = 0, failed_login_attempts = 0, locked_until = NULL WHERE id = ?'
+  ).run(newHash, req.userId);
   revokeAllSessionsForUser(req.userId);
 
-  res.json({ message: 'PIN updated successfully' });
+  res.json({
+    message: 'PIN updated successfully. Session revoked for security.',
+    sessionRevoked: true,
+    nextAction: 'clear_token_and_redirect_to_login'
+  });
 });
 
 // POST /api/users/pin-recovery-request — Child requests help from parent/admin
@@ -134,8 +140,10 @@ router.post('/:id/pin-reset', requireParentOrAdmin, (req, res) => {
     return res.status(403).json({ error: 'Only an admin can reset another admin PIN' });
   }
 
-  const hash = bcrypt.hashSync(newPin, 10);
-  db.prepare('UPDATE users SET pin_hash = ?, failed_login_attempts = 0, locked_until = NULL WHERE id = ?').run(hash, req.params.id);
+  const hash = hashPin(newPin);
+  db.prepare(
+    'UPDATE users SET pin_hash = ?, pin_hash_needs_rehash = 0, failed_login_attempts = 0, locked_until = NULL WHERE id = ?'
+  ).run(hash, req.params.id);
   revokeAllSessionsForUser(req.params.id);
 
   db.prepare(

@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../db');
 const { authenticateToken, requireParentOrAdmin } = require('../middleware/auth');
+const { requireSameHousehold } = require('../middleware/household');
 const { parsePaging, toAmountCents, nowIso } = require('../services/utils');
 const { createNotifications } = require('../services/notifications');
 
@@ -44,7 +45,7 @@ router.get('/', (req, res) => {
 });
 
 // POST /api/allowances — create allowance rule (parent/admin)
-router.post('/', requireParentOrAdmin, (req, res) => {
+router.post('/', requireParentOrAdmin, requireSameHousehold((req) => req.body?.childId), (req, res) => {
   const { childId, budget, period, approvalThreshold } = req.body || {};
 
   if (!childId || !budget || !period) {
@@ -58,9 +59,6 @@ router.post('/', requireParentOrAdmin, (req, res) => {
   const child = db.prepare('SELECT id, role, household_id FROM users WHERE id = ?').get(childId);
   if (!child) {
     return res.status(404).json({ error: 'Child user not found' });
-  }
-  if (child.household_id !== req.householdId) {
-    return res.status(403).json({ error: 'Allowances can only target users in your household' });
   }
 
   if (child.role !== 'child') {

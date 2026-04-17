@@ -34,6 +34,7 @@ db.exec(`
     household_id TEXT REFERENCES households(id),
     name TEXT NOT NULL UNIQUE COLLATE NOCASE,
     pin_hash TEXT NOT NULL,
+    pin_hash_needs_rehash INTEGER NOT NULL DEFAULT 0,
     role TEXT NOT NULL DEFAULT 'child',
     failed_login_attempts INTEGER NOT NULL DEFAULT 0,
     locked_until TEXT,
@@ -159,6 +160,12 @@ db.exec(`
     resolved_at TEXT,
     resolved_by TEXT REFERENCES users(id)
   );
+
+  CREATE TABLE IF NOT EXISTS rate_limit_attempts (
+    key TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    window_start INTEGER NOT NULL
+  );
 `);
 
 function hasColumn(table, column) {
@@ -178,6 +185,9 @@ function ensureBaseMigrations() {
   ensureColumn('users', "role TEXT NOT NULL DEFAULT 'child'");
   ensureColumn('users', 'failed_login_attempts INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'locked_until TEXT');
+
+  const hadPinRehashColumn = hasColumn('users', 'pin_hash_needs_rehash');
+  ensureColumn('users', 'pin_hash_needs_rehash INTEGER NOT NULL DEFAULT 0');
 
   ensureColumn('requests', 'amount_cents INTEGER');
   ensureColumn('requests', 'category TEXT');
@@ -207,6 +217,12 @@ function ensureBaseMigrations() {
 
   db.exec("UPDATE users SET role = 'child' WHERE role IS NULL OR TRIM(role) = ''");
   db.exec('UPDATE users SET failed_login_attempts = 0 WHERE failed_login_attempts IS NULL');
+  db.exec('UPDATE users SET pin_hash_needs_rehash = 0 WHERE pin_hash_needs_rehash IS NULL');
+
+  if (!hadPinRehashColumn) {
+    db.exec('UPDATE users SET pin_hash_needs_rehash = 1');
+  }
+
   db.exec('UPDATE requests SET amount_cents = CAST(ROUND(amount * 100) AS INTEGER) WHERE amount_cents IS NULL');
   db.exec('UPDATE requests SET settled_cents = 0 WHERE settled_cents IS NULL');
   db.exec('UPDATE requests SET requires_approval = 0 WHERE requires_approval IS NULL');
@@ -235,5 +251,6 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_allowances_child_active ON allowances(ch
 db.exec('CREATE INDEX IF NOT EXISTS idx_attachments_ref ON attachments(ref_type, ref_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_users_household ON users(household_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_household_invites_lookup ON household_invites(code, household_id, used_at, expires_at)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_rate_limit_window_start ON rate_limit_attempts(window_start)');
 
 module.exports = db;

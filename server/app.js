@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
 const config = require('./config');
+const SqliteRateLimitStore = require('./middleware/sqlite-rate-limit-store');
 
 // Initialize database (creates tables on first run)
 const db = require('./db');
@@ -27,7 +28,31 @@ const {
 const app = express();
 app.set('trust proxy', config.trustProxy);
 
+function requireJsonContentType(req, res, next) {
+  const methodRequiresJson = req.method === 'POST' || req.method === 'PATCH';
+  const isApiRoute = req.path.startsWith('/api/');
+  const contentType = req.headers['content-type'];
+  const contentLength = Number(req.headers['content-length'] || '0');
+  const hasTransferEncoding = typeof req.headers['transfer-encoding'] === 'string';
+  const hasRequestBody = contentLength > 0 || hasTransferEncoding;
+
+  if (!methodRequiresJson || !isApiRoute) {
+    return next();
+  }
+
+  if (!contentType && !hasRequestBody) {
+    return next();
+  }
+
+  if (!req.is('application/json')) {
+    return res.status(415).json({ error: 'Unsupported Media Type. Use application/json' });
+  }
+
+  return next();
+}
+
 // Middleware
+app.use(requireJsonContentType);
 app.use(express.json({ limit: config.jsonBodyLimit }));
 app.use(securityHeaders);
 app.use(requestLogger({ slowRequestMs: config.slowRequestMs }));
@@ -58,6 +83,7 @@ if (config.rateLimit.enabled) {
     max: config.rateLimit.globalMax,
     standardHeaders: true,
     legacyHeaders: false,
+    store: new SqliteRateLimitStore({ prefix: 'global' }),
     message: { error: 'Too many requests, please try again later' }
   });
   app.use('/api', globalLimiter);
@@ -67,6 +93,7 @@ if (config.rateLimit.enabled) {
     max: config.rateLimit.authMax,
     standardHeaders: true,
     legacyHeaders: false,
+    store: new SqliteRateLimitStore({ prefix: 'auth' }),
     message: { error: 'Too many login attempts, please try again later' }
   });
   app.use('/api/auth/login', authLimiter);

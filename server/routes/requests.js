@@ -6,10 +6,14 @@ const { parsePaging, toAmountCents, sanitizeTags, parseDateInput, nowIso } = req
 const { requiresApprovalForChildRequest } = require('../services/allowances');
 const { createNotifications, getParentAndAdminIds } = require('../services/notifications');
 const { processDueRecurringRequests } = require('../services/recurring');
-const { areUsersInSameHousehold } = require('../services/households');
+const { requireSameHousehold } = require('../middleware/household');
 
 const router = express.Router();
 router.use(authenticateToken);
+
+function notFound(res) {
+  return res.status(404).json({ error: 'Not found' });
+}
 
 function shapeRequest(row) {
   return {
@@ -126,7 +130,7 @@ router.get('/', (req, res) => {
 });
 
 // POST /api/requests — Create a new money request
-router.post('/', (req, res) => {
+router.post('/', requireSameHousehold((req) => req.body?.toId), (req, res) => {
   const { toId, amount, reason, category, tags } = req.body || {};
 
   if (!toId) {
@@ -141,9 +145,6 @@ router.post('/', (req, res) => {
   const targetUser = db.prepare('SELECT id, household_id FROM users WHERE id = ?').get(toId);
   if (!targetUser) {
     return res.status(404).json({ error: 'Target user not found' });
-  }
-  if (!areUsersInSameHousehold(req.userId, toId)) {
-    return res.status(403).json({ error: 'Requests are only allowed within the same household' });
   }
 
   if (toId === req.userId) {
@@ -285,11 +286,11 @@ router.patch('/:id', (req, res) => {
   ).get(req.params.id, req.householdId);
 
   if (!request) {
-    return res.status(404).json({ error: 'Request not found' });
+    return notFound(res);
   }
 
   if (request.to_id !== req.userId) {
-    return res.status(403).json({ error: 'Only the recipient can accept or reject' });
+    return notFound(res);
   }
 
   if (request.status !== 'pending') {

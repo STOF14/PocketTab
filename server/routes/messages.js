@@ -9,6 +9,10 @@ const { createNotifications } = require('../services/notifications');
 const router = express.Router();
 router.use(authenticateToken);
 
+function notFound(res) {
+  return res.status(404).json({ error: 'Not found' });
+}
+
 function applyFilters(query, params) {
   let sql = ' WHERE ref_type = ? AND ref_id = ?';
 
@@ -52,11 +56,11 @@ router.get('/', (req, res) => {
 
   const ref = getReference(refType, refId);
   if (!ref) {
-    return res.status(404).json({ error: `${refType} not found` });
+    return notFound(res);
   }
 
   if (!canAccessReference(ref, req.userId)) {
-    return res.status(403).json({ error: 'You cannot access messages for this item' });
+    return notFound(res);
   }
 
   const paging = parsePaging(req.query);
@@ -99,11 +103,11 @@ router.post('/', (req, res) => {
 
   const ref = getReference(refType, refId);
   if (!ref) {
-    return res.status(404).json({ error: `${refType} not found` });
+    return notFound(res);
   }
 
   if (!canAccessReference(ref, req.userId)) {
-    return res.status(403).json({ error: 'You cannot message on this item' });
+    return notFound(res);
   }
 
   const safeText = String(text).trim().slice(0, 200);

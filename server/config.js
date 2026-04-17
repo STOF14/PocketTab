@@ -1,6 +1,7 @@
 const isProduction = process.env.NODE_ENV === 'production';
 const MIN_SESSION_TTL_DAYS = 1;
 const MAX_SESSION_TTL_DAYS = 30;
+const DEFAULT_SESSION_TTL_DAYS = 7;
 
 function parsePositiveInt(value, fallback) {
   const parsed = Number.parseInt(value, 10);
@@ -12,10 +13,12 @@ function parsePositiveInt(value, fallback) {
 }
 
 function parseSessionTtlDays(value) {
-  const parsed = parsePositiveInt(value, 7);
-  if (parsed < MIN_SESSION_TTL_DAYS) return MIN_SESSION_TTL_DAYS;
-  if (parsed > MAX_SESSION_TTL_DAYS) return MAX_SESSION_TTL_DAYS;
-  return parsed;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed)) {
+    return DEFAULT_SESSION_TTL_DAYS;
+  }
+
+  return Math.min(MAX_SESSION_TTL_DAYS, Math.max(MIN_SESSION_TTL_DAYS, parsed));
 }
 
 function parseTrustProxy(value) {

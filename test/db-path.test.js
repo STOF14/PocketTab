@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const path = require('path');
 
 const {
+  ALLOW_EPHEMERAL_RENDER_DB_FALLBACK_ENV,
   DEFAULT_DB_FILENAME,
   RENDER_PERSISTENT_DIR,
   detectRenderEnvironment,
@@ -56,7 +57,22 @@ test('resolveDbPath falls back to Render persistent disk path in production', ()
   assert.match(warning, /defaulting to \/var\/data\/pockettab\.db/);
 });
 
-test('resolveDbPath uses cwd fallback on Render when /var/data is unavailable', () => {
+test('resolveDbPath throws on Render in production when /var/data is unavailable and fallback is not explicitly allowed', () => {
+  assert.throws(
+    () => resolveDbPath({
+      nodeEnv: 'production',
+      dbPathEnv: '',
+      isRender: true,
+      cwd: '/opt/render/project/src',
+      renderPersistentDirExists: false,
+      allowEphemeralRenderFallback: false,
+      onWarn: () => {}
+    }),
+    /DB_PATH is required when NODE_ENV=production on Render/
+  );
+});
+
+test('resolveDbPath uses cwd fallback on Render when /var/data is unavailable and fallback is explicitly allowed', () => {
   let warning = '';
 
   const resolved = resolveDbPath({
@@ -65,6 +81,7 @@ test('resolveDbPath uses cwd fallback on Render when /var/data is unavailable', 
     isRender: true,
     cwd: '/opt/render/project/src',
     renderPersistentDirExists: false,
+    allowEphemeralRenderFallback: true,
     onWarn: (message) => {
       warning = message;
     }
@@ -72,4 +89,5 @@ test('resolveDbPath uses cwd fallback on Render when /var/data is unavailable', 
 
   assert.equal(resolved, '/opt/render/project/src/pockettab.db');
   assert.match(warning, /ephemeral storage/);
+  assert.match(warning, new RegExp(`${ALLOW_EPHEMERAL_RENDER_DB_FALLBACK_ENV}=true`));
 });

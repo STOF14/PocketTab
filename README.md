@@ -43,9 +43,12 @@ The app will be available at <http://localhost:3000>.
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
 | `PORT` | `3000` | Server port |
-| `JWT_SECRET` | dev fallback in non-production | Secret key for JWT tokens (required in production) |
-| `NODE_ENV` | `development` | Set to `production` to enforce strict secret handling |
+| `JWT_SECRET` | required; ephemeral random fallback only when missing outside production | Secret key for JWT tokens (must be explicitly set in development, staging, and production) |
+| `PIN_PEPPER` | required; ephemeral random fallback only when missing outside production | Server-side PIN pepper appended before hashing |
+| `PIN_BCRYPT_ROUNDS` | `12` (minimum `12`) | Bcrypt cost factor for PIN hashing |
+| `NODE_ENV` | `development` | Set to `production` to enforce strict secret and pepper handling |
 | `DB_PATH` | `./pockettab.db` (dev), auto `/var/data/pockettab.db` on Render production | SQLite database file path override |
+| `ALLOW_EPHEMERAL_RENDER_DB_FALLBACK` | `false` | Emergency-only: when `true`, allows Render production startup without `/var/data` by using app-local ephemeral DB |
 | `ALLOW_DATA_RESET` | `false` | Set `true` to enable `DELETE /api/users/reset-all` |
 | `SLOW_REQUEST_MS` | `1000` | Warn-level logging threshold for slow HTTP requests |
 | `JSON_BODY_LIMIT` | `1mb` in production, else `10mb` | Max JSON request payload size |
@@ -114,9 +117,10 @@ The app will be available at <http://localhost:3000>.
 
 ## Security Notes
 
-- In production (`NODE_ENV=production`), `JWT_SECRET` is mandatory.
+- In production (`NODE_ENV=production`), both `JWT_SECRET` and `PIN_PEPPER` are mandatory.
+- PIN hashes use bcrypt cost factor `12` minimum with server-side peppering, and legacy hashes are re-hashed on next successful login.
 - Message read/write now checks request/payment ownership before access.
-- Global and auth-specific rate limits are active on API routes.
+- Global and auth-specific rate limits are active on API routes and persisted in SQLite so counters survive restarts.
 
 ## Operations
 
@@ -153,10 +157,12 @@ The app will be available at <http://localhost:3000>.
 - Set production runtime vars at minimum:
   - `NODE_ENV=production`
   - `JWT_SECRET=<strong-random-secret>`
+  - `PIN_PEPPER=<random-32-byte-hex>`
   - `DB_PATH=<durable managed volume path>`
   - `TRUST_PROXY=1`
 - Render note: if `DB_PATH` is not set and a persistent disk is mounted at `/var/data`, PocketTab defaults to `/var/data/pockettab.db`.
-- If no persistent disk is mounted, PocketTab falls back to `./pockettab.db` in the app directory (ephemeral storage). For durable data, mount a disk and set `DB_PATH` explicitly.
+- If no persistent disk is mounted, startup now fails by default to prevent accidental non-durable storage in production.
+- Emergency-only override: set `ALLOW_EPHEMERAL_RENDER_DB_FALLBACK=true` to allow app-local `./pockettab.db` fallback (ephemeral data, not recommended for normal operation).
 - Run health monitoring against `GET /api/health`:
   - `HEALTH_URL=https://your-domain/api/health npm run monitor:health`
 - Run staged smoke tests before release:
@@ -166,14 +172,15 @@ The app will be available at <http://localhost:3000>.
 
 - Tokens are always sent as `Authorization: Bearer <token>`.
 - Session TTL is controlled by `SESSION_TTL_DAYS` (1-30 day guardrail).
-- In production, `JWT_SECRET` is mandatory and dev fallback secrets are blocked.
+- In production, `JWT_SECRET` and `PIN_PEPPER` are mandatory.
 
 ### Multi-family (Household Tenancy)
 
 - Users are linked to a household (`users.household_id`) and core write operations are household-scoped.
 - New APIs:
   - `GET /api/auth/household` — current household details
-  - `POST /api/auth/household/invites` — create join invite (parent/admin)
+  - `POST /api/auth/household/invites` — create join invite (admin only)
+  - `PATCH /api/auth/household/members/:userId/role` — assign household role (`admin` or `member`, admin only)
 - Registration supports:
   - `inviteCode` to join an existing household
   - `createHousehold: true` and optional `householdName` to start a new household

@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../db');
 const { authenticateToken, requireParentOrAdmin } = require('../middleware/auth');
+const { requireSameHousehold } = require('../middleware/household');
 const { parsePaging, toAmountCents, sanitizeTags, nowIso } = require('../services/utils');
 const { processDueRecurringRequests, nextRunAt } = require('../services/recurring');
 const { createNotification } = require('../services/notifications');
@@ -55,7 +56,12 @@ router.get('/', (req, res) => {
 });
 
 // POST /api/recurring — create recurring rule (parent/admin)
-router.post('/', requireParentOrAdmin, (req, res) => {
+router.post(
+  '/',
+  requireParentOrAdmin,
+  requireSameHousehold((req) => req.body?.fromId),
+  requireSameHousehold((req) => req.body?.toId),
+  (req, res) => {
   const { fromId, toId, amount, reason, category, tags, frequency, nextRunAt: requestedNextRun } = req.body || {};
   const safeFrequency = parseFrequency(frequency);
 
@@ -80,9 +86,6 @@ router.post('/', requireParentOrAdmin, (req, res) => {
   const toUser = db.prepare('SELECT id, household_id FROM users WHERE id = ?').get(toId);
   if (!fromUser || !toUser) {
     return res.status(404).json({ error: 'fromId or toId user not found' });
-  }
-  if (fromUser.household_id !== req.householdId || toUser.household_id !== req.householdId) {
-    return res.status(403).json({ error: 'Recurring rules must stay within your household' });
   }
 
   const createdAt = nowIso();

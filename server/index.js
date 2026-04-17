@@ -1,9 +1,11 @@
 const app = require('./app');
+const config = require('./config');
 const PORT = process.env.PORT || 3000;
 const SHUTDOWN_TIMEOUT_MS = 10000;
 
 const server = app.listen(PORT, () => {
   console.log(`PocketTab server running on http://localhost:${PORT}`);
+  console.log(`Resolved SESSION_TTL_DAYS=${config.sessionTtlDays}`);
 });
 
 function shutdown(signal) {

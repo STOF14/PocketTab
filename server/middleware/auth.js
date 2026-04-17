@@ -4,7 +4,6 @@ const db = require('../db');
 const config = require('../config');
 const { isParentOrAdmin } = require('../services/roles');
 
-const DEV_FALLBACK_SECRET = 'pockettab-dev-secret-change-in-production';
 const BEARER_PREFIX = 'Bearer ';
 const isProduction = config.isProduction;
 const SESSION_TTL_DAYS = config.sessionTtlDays;
@@ -13,7 +12,11 @@ if (isProduction && !process.env.JWT_SECRET) {
   throw new Error('JWT_SECRET is required when NODE_ENV=production');
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || DEV_FALLBACK_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+
+if (!process.env.JWT_SECRET) {
+  console.warn('JWT_SECRET not set. Generated ephemeral secret for this process; existing sessions will be invalid after restart.');
+}
 
 function tokenHash(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -133,6 +136,28 @@ function requireRoles(roles) {
   };
 }
 
+function requireRole(...roles) {
+  const allowed = new Set(roles);
+
+  return (req, res, next) => {
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const user = db.prepare('SELECT role FROM users WHERE id = ?').get(req.userId);
+    if (!user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    req.userRole = user.role;
+    if (!allowed.has(user.role)) {
+      return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+
+    return next();
+  };
+}
+
 function requireParentOrAdmin(req, res, next) {
   if (!isParentOrAdmin(req.userRole)) {
     return res.status(403).json({ error: 'Parent or admin role required' });
@@ -147,6 +172,7 @@ module.exports = {
   revokeSession,
   revokeAllSessionsForUser,
   requireRoles,
+  requireRole,
   requireParentOrAdmin,
   JWT_SECRET
 };

@@ -4,6 +4,7 @@ const path = require('path');
 const RENDER_PERSISTENT_DIR = '/var/data';
 const DEFAULT_DB_FILENAME = 'pockettab.db';
 const RENDER_PATH_PREFIX = '/opt/render/';
+const ALLOW_EPHEMERAL_RENDER_DB_FALLBACK_ENV = 'ALLOW_EPHEMERAL_RENDER_DB_FALLBACK';
 
 function hasNonEmptyValue(value) {
   return typeof value === 'string' && value.trim() !== '';
@@ -21,6 +22,7 @@ function resolveDbPath(options = {}) {
     dbPathEnv = process.env.DB_PATH,
     isRender = detectRenderEnvironment(),
     cwd = process.cwd(),
+    allowEphemeralRenderFallback = process.env[ALLOW_EPHEMERAL_RENDER_DB_FALLBACK_ENV] === 'true',
     renderPersistentDirExists = fs.existsSync(RENDER_PERSISTENT_DIR),
     onWarn = (message) => console.warn(message)
   } = options;
@@ -36,12 +38,18 @@ function resolveDbPath(options = {}) {
       return fallbackPath;
     }
 
-    if (isRender) {
+    if (isRender && allowEphemeralRenderFallback) {
       const fallbackPath = path.join(cwd, DEFAULT_DB_FILENAME);
       onWarn(
-        `[db] DB_PATH is not set and /var/data is unavailable; defaulting to ${fallbackPath} on Render (ephemeral storage). Mount a persistent disk and set DB_PATH for durable data.`
+        `[db] DB_PATH is not set and /var/data is unavailable; defaulting to ${fallbackPath} on Render (ephemeral storage) because ${ALLOW_EPHEMERAL_RENDER_DB_FALLBACK_ENV}=true. Mount a persistent disk and set DB_PATH for durable data.`
       );
       return fallbackPath;
+    }
+
+    if (isRender) {
+      throw new Error(
+        `DB_PATH is required when NODE_ENV=production on Render. Mount a persistent disk at /var/data and set DB_PATH=/var/data/${DEFAULT_DB_FILENAME}. Temporary non-durable fallback can be enabled with ${ALLOW_EPHEMERAL_RENDER_DB_FALLBACK_ENV}=true.`
+      );
     }
 
     throw new Error(
@@ -57,6 +65,7 @@ function ensureDbDirectory(dbPath) {
 }
 
 module.exports = {
+  ALLOW_EPHEMERAL_RENDER_DB_FALLBACK_ENV,
   DEFAULT_DB_FILENAME,
   RENDER_PERSISTENT_DIR,
   detectRenderEnvironment,
