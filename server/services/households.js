@@ -1,21 +1,75 @@
 const crypto = require('crypto');
 const db = require('../db');
+const { hashPin } = require('./pin-security');
+const {
+  normalizeHouseholdLoginId,
+  generateHouseholdCode,
+  generateUniqueHouseholdLoginId
+} = require('./household-login');
+
+function isHouseholdLoginIdTaken(loginId, excludedHouseholdId) {
+  const normalized = normalizeHouseholdLoginId(loginId);
+  if (!normalized) return false;
+
+  const row = db.prepare('SELECT id FROM households WHERE login_id = ?').get(normalized);
+  if (!row) return false;
+  if (!excludedHouseholdId) return true;
+  return row.id !== excludedHouseholdId;
+}
+
+function allocateUniqueHouseholdLoginId(excludedHouseholdId) {
+  return generateUniqueHouseholdLoginId((candidate) => isHouseholdLoginIdTaken(candidate, excludedHouseholdId));
+}
 
 function createHousehold(name) {
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
   const safeName = String(name || 'Household').trim().slice(0, 80) || 'Household';
-  db.prepare('INSERT INTO households (id, name, created_at) VALUES (?, ?, ?)').run(id, safeName, createdAt);
-  return { id, name: safeName, created_at: createdAt };
+  const loginId = allocateUniqueHouseholdLoginId();
+  const loginCode = generateHouseholdCode();
+  const loginCodeHash = hashPin(loginCode);
+
+  db.prepare('INSERT INTO households (id, name, login_id, login_code_hash, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(id, safeName, loginId, loginCodeHash, createdAt);
+
+  return {
+    id,
+    name: safeName,
+    created_at: createdAt,
+    login_id: loginId,
+    login_code_plain: loginCode
+  };
 }
 
 function getUserHousehold(userId) {
   return db.prepare(
-    `SELECT h.id, h.name, h.created_at
+    `SELECT h.id, h.name, h.login_id, h.created_at
      FROM users u
      JOIN households h ON h.id = u.household_id
      WHERE u.id = ?`
   ).get(userId);
+}
+
+function getHouseholdByLoginId(loginId) {
+  return db.prepare(
+    'SELECT id, name, login_id, login_code_hash, created_at FROM households WHERE login_id = ?'
+  ).get(normalizeHouseholdLoginId(loginId));
+}
+
+function rotateHouseholdLoginCode(householdId) {
+  const household = db.prepare('SELECT id, login_id FROM households WHERE id = ?').get(householdId);
+  if (!household) {
+    return null;
+  }
+
+  const loginCode = generateHouseholdCode();
+  db.prepare('UPDATE households SET login_code_hash = ? WHERE id = ?').run(hashPin(loginCode), householdId);
+
+  return {
+    id: household.id,
+    login_id: household.login_id,
+    login_code_plain: loginCode
+  };
 }
 
 function getUserWithHousehold(userId) {
@@ -70,8 +124,11 @@ function consumeInvite(code, userId) {
 module.exports = {
   createHousehold,
   getUserHousehold,
+  getHouseholdByLoginId,
+  rotateHouseholdLoginCode,
   getUserWithHousehold,
   areUsersInSameHousehold,
   createInvite,
-  consumeInvite
+  consumeInvite,
+  allocateUniqueHouseholdLoginId
 };

@@ -6,9 +6,10 @@
      * Data syncs across all users and devices through the shared backend.
      *
      * API Endpoints:
-     *   GET    /api/auth/users         — List all users (public)
+    *   POST   /api/auth/household/access — Validate household login ID + code
+    *   GET    /api/auth/household/members — List users in signed-in household
      *   POST   /api/auth/register      — Create user (returns JWT)
-     *   POST   /api/auth/login         — Login (returns JWT)
+    *   POST   /api/auth/login         — Login with household access token + PIN
     *   POST   /api/auth/household/invites — Create household invite code
      *   GET    /api/requests           — List requests for current user
      *   POST   /api/requests           — Create a request
@@ -125,7 +126,12 @@
     /** Load users from server */
     async function loadUsers() {
       try {
-        cachedUsers = await api('GET', '/auth/users');
+        if (!authToken || !currentUser) {
+          cachedUsers = [];
+          return;
+        }
+
+        cachedUsers = await api('GET', '/auth/household/members');
       } catch (e) {
         cachedUsers = [];
       }
@@ -182,9 +188,15 @@
       return u ? u.name : 'Unknown';
     }
 
+    function isResolvedRequest(req) {
+      return req.status === 'settled' || req.status === 'rejected';
+    }
+
     // ===== STATE =====
     var currentUser = null;
     var selectedLoginUser = null;
+    var loginHouseholdAccessToken = null;
+    var loginHouseholdContext = null;
     var onboardingState = {
       step: 1,
       path: null,
@@ -201,25 +213,24 @@
     async function init() {
       setupEventListeners();
       updateConnectivityFromNavigator();
-      await loadUsers();
 
       // Check for existing session token
       var token = localStorage.getItem('pt_token');
-      var savedUser = null;
-      try {
-        savedUser = JSON.parse(localStorage.getItem('pt_user'));
-      } catch(e) { /* ignore */ }
 
-      if (token && savedUser) {
+      if (token) {
         authToken = token;
-        // Verify the user still exists
-        var found = cachedUsers.find(function(u) { return u.id === savedUser.id; });
-        if (found) {
-          currentUser = savedUser;
+        try {
+          currentUser = await api('GET', '/users/me');
+          localStorage.setItem('pt_user', JSON.stringify(currentUser));
           enterApp();
           return;
+        } catch (e) {
+          authToken = null;
+          localStorage.removeItem('pt_token');
+          localStorage.removeItem('pt_user');
         }
       }
+
       showAuth();
     }
 
@@ -231,17 +242,109 @@
       appScreen.classList.add('hidden');
       currentUser = null;
       selectedLoginUser = null;
+      loginHouseholdAccessToken = null;
+      loginHouseholdContext = null;
       cachedHousehold = null;
       authToken = null;
+      cachedUsers = [];
       localStorage.removeItem('pt_token');
       localStorage.removeItem('pt_user');
-      await loadUsers();
       resetCreateFlow();
+      resetLoginFlow();
       authCreate.classList.add('hidden');
       authSelect.classList.remove('hidden');
-      renderUserList();
+      document.getElementById('login-household-id').value = '';
+      document.getElementById('login-household-code').value = '';
+      document.getElementById('login-household-id').focus();
+    }
+
+    function resetLoginFlow() {
+      selectedLoginUser = null;
+      loginHouseholdAccessToken = null;
+      loginHouseholdContext = null;
+      cachedUsers = [];
+
+      document.getElementById('login-member-stage').classList.add('hidden');
+      document.getElementById('login-household-stage').classList.remove('hidden');
       document.getElementById('pin-login').classList.add('hidden');
       document.getElementById('login-pin').value = '';
+      document.getElementById('login-household-summary').textContent = 'Select your profile';
+      document.getElementById('user-list').innerHTML = '';
+
+      hideError('login-household-error');
+      hideError('login-error');
+    }
+
+    function renderLoginHouseholdSummary() {
+      var summary = document.getElementById('login-household-summary');
+      if (!summary) {
+        return;
+      }
+
+      if (!loginHouseholdContext) {
+        summary.textContent = 'Select your profile';
+        return;
+      }
+
+      var displayName = loginHouseholdContext.name || 'Household';
+      var displayId = loginHouseholdContext.loginId || loginHouseholdContext.login_id || '';
+      summary.textContent = 'Household: ' + displayName + (displayId ? ' (' + displayId + ')' : '');
+    }
+
+    async function resolveHouseholdForLogin() {
+      var householdLoginId = document.getElementById('login-household-id').value.trim().toUpperCase();
+      var householdCode = document.getElementById('login-household-code').value.trim();
+
+      hideError('login-household-error');
+      hideError('login-error');
+
+      if (!householdLoginId) {
+        showError('login-household-error', 'Household ID is required');
+        return;
+      }
+
+      if (!/^\d{6}$/.test(householdCode)) {
+        showError('login-household-error', 'Household code must be 6 digits');
+        return;
+      }
+
+      try {
+        var result = await api('POST', '/auth/household/access', {
+          householdLoginId: householdLoginId,
+          householdCode: householdCode
+        });
+
+        loginHouseholdAccessToken = result.accessToken;
+        loginHouseholdContext = result.household || null;
+        cachedUsers = Array.isArray(result.members) ? result.members : [];
+        selectedLoginUser = null;
+
+        renderUserList();
+        renderLoginHouseholdSummary();
+
+        document.getElementById('login-household-stage').classList.add('hidden');
+        document.getElementById('login-member-stage').classList.remove('hidden');
+        document.getElementById('pin-login').classList.add('hidden');
+        document.getElementById('login-pin').value = '';
+      } catch (e) {
+        showError('login-household-error', e.message || 'Unable to verify household login details');
+      }
+    }
+
+    function changeLoginHousehold() {
+      selectedLoginUser = null;
+      loginHouseholdAccessToken = null;
+      loginHouseholdContext = null;
+      cachedUsers = [];
+
+      document.getElementById('user-list').innerHTML = '';
+      document.getElementById('pin-login').classList.add('hidden');
+      document.getElementById('login-pin').value = '';
+      document.getElementById('login-member-stage').classList.add('hidden');
+      document.getElementById('login-household-stage').classList.remove('hidden');
+      document.getElementById('login-household-code').focus();
+
+      hideError('login-household-error');
       hideError('login-error');
     }
 
@@ -252,8 +355,7 @@
       list.innerHTML = '';
 
       if (users.length === 0) {
-        list.innerHTML = '<li style="cursor:default; font-size:12px; text-transform:uppercase; letter-spacing:1px;">No users yet. Create one below.</li>';
-        document.getElementById('btn-create-user').style.display = '';
+        list.innerHTML = '<li style="cursor:default; font-size:12px; text-transform:uppercase; letter-spacing:1px;">No users found for this household.</li>';
         return;
       }
 
@@ -266,8 +368,6 @@
         });
         list.appendChild(li);
       });
-
-      document.getElementById('btn-create-user').style.display = '';
     }
 
     /** Select a user to log in */
@@ -290,6 +390,10 @@
         showError('login-error', 'Select a user first');
         return;
       }
+      if (!loginHouseholdAccessToken) {
+        showError('login-household-error', 'Enter household details first');
+        return;
+      }
       if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
         showError('login-error', 'PIN must be 4 digits');
         return;
@@ -298,7 +402,8 @@
       try {
         var result = await api('POST', '/auth/login', {
           userId: selectedLoginUser.id,
-          pin: pin
+          pin: pin,
+          householdAccessToken: loginHouseholdAccessToken
         });
         authToken = result.token;
         currentUser = result.user;
@@ -306,6 +411,11 @@
         localStorage.setItem('pt_user', JSON.stringify(result.user));
         enterApp();
       } catch (e) {
+        if ((e.message || '').toLowerCase().indexOf('household access expired') !== -1) {
+          showError('login-household-error', 'Household access expired. Enter household details again.');
+          changeLoginHousehold();
+          return;
+        }
         showError('login-error', e.message || 'Incorrect PIN');
       }
     }
@@ -547,16 +657,25 @@
         localStorage.setItem('pt_user', JSON.stringify(result.user));
 
         if (pathKind === 'new' && result.user && result.user.role === 'admin') {
-          alert('Household created. You are the admin for this household.');
+          var householdLoginId = result.householdAuth?.householdLoginId;
+          var householdCode = result.householdAuth?.householdCode;
+
+          if (householdLoginId && householdCode) {
+            alert(
+              'Household created. You are the admin for this household.\n\n' +
+              'Household ID: ' + householdLoginId + '\n' +
+              'Household Code: ' + householdCode + '\n\n' +
+              'Share these login details with your household members.'
+            );
+          } else {
+            alert('Household created. You are the admin for this household.');
+          }
         }
 
         // Clear form and go back to login view
         resetCreateFlow();
         authCreate.classList.add('hidden');
         authSelect.classList.remove('hidden');
-
-        await loadUsers();
-        renderUserList();
 
         // Enter app directly
         enterApp();
@@ -600,6 +719,7 @@
       });
       document.getElementById('subtab-incoming').classList.toggle('hidden', subTabName !== 'incoming');
       document.getElementById('subtab-outgoing').classList.toggle('hidden', subTabName !== 'outgoing');
+      document.getElementById('subtab-resolved').classList.toggle('hidden', subTabName !== 'resolved');
       document.getElementById('subtab-new-request').classList.toggle('hidden', subTabName !== 'new-request');
     }
 
@@ -725,7 +845,9 @@
       var requests = cachedRequests;
       var uid = currentUser.id;
 
-      var incoming = requests.filter(function(r) { return r.to_id === uid; })
+      var incoming = requests.filter(function(r) {
+        return r.to_id === uid && !isResolvedRequest(r);
+      })
         .sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); });
 
       var incomingList = document.getElementById('incoming-list');
@@ -739,7 +861,9 @@
         });
       }
 
-      var outgoing = requests.filter(function(r) { return r.from_id === uid; })
+      var outgoing = requests.filter(function(r) {
+        return r.from_id === uid && !isResolvedRequest(r);
+      })
         .sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); });
 
       var outgoingList = document.getElementById('outgoing-list');
@@ -752,6 +876,25 @@
           outgoingList.appendChild(createRequestRow(r, 'outgoing'));
         });
       }
+
+      var resolved = requests.filter(function(r) {
+        return (r.from_id === uid || r.to_id === uid) && isResolvedRequest(r);
+      }).sort(function(a, b) {
+        var aTime = a.resolved_at || a.created_at;
+        var bTime = b.resolved_at || b.created_at;
+        return new Date(bTime) - new Date(aTime);
+      });
+
+      var resolvedList = document.getElementById('resolved-list');
+      resolvedList.innerHTML = '';
+
+      if (resolved.length === 0) {
+        resolvedList.innerHTML = '<div class="empty-state">No resolved requests</div>';
+      } else {
+        resolved.forEach(function(r) {
+          resolvedList.appendChild(createRequestRow(r, 'resolved'));
+        });
+      }
     }
 
     /** Create a request row element */
@@ -762,10 +905,15 @@
       var fromName = getUserName(req.from_id);
       var toName = getUserName(req.to_id);
       var reason = req.reason ? ' for ' + req.reason : '';
+      var uid = currentUser.id;
 
       var descText = direction === 'incoming'
         ? fromName + ' requests ' + formatAmount(req.amount) + ' from you' + reason
-        : 'You requested ' + formatAmount(req.amount) + ' from ' + toName + reason;
+        : direction === 'outgoing'
+          ? 'You requested ' + formatAmount(req.amount) + ' from ' + toName + reason
+          : (req.status === 'settled'
+            ? 'Resolved with ' + (req.from_id === uid ? toName : fromName) + ': ' + formatAmount(req.amount) + reason
+            : 'Request with ' + (req.from_id === uid ? toName : fromName) + ' was rejected' + reason);
 
       li.innerHTML =
         '<div class="item-header">' +
@@ -802,6 +950,82 @@
       actionsDiv.appendChild(chatToggle);
 
       return li;
+    }
+
+    function getLinkableRequestsForPayment() {
+      var uid = currentUser.id;
+      return cachedRequests.filter(function(req) {
+        return req.to_id === uid &&
+          (req.status === 'accepted' || req.status === 'partially_settled') &&
+          Number(req.remaining) > 0;
+      }).sort(function(a, b) {
+        return new Date(b.created_at) - new Date(a.created_at);
+      });
+    }
+
+    function applyLinkedRequestSelection() {
+      var linkedSelect = document.getElementById('pay-linked-request');
+      var recipientSelect = document.getElementById('pay-user');
+      var amountInput = document.getElementById('pay-amount');
+      var hint = document.getElementById('pay-linked-request-hint');
+
+      if (!linkedSelect || !recipientSelect || !amountInput || !hint) {
+        return;
+      }
+
+      var selectedOption = linkedSelect.options[linkedSelect.selectedIndex];
+      if (!linkedSelect.value) {
+        recipientSelect.disabled = false;
+        hint.textContent = 'Optional: tie this payment to an accepted request.';
+        return;
+      }
+
+      var recipientId = selectedOption.getAttribute('data-recipient-id');
+      var remaining = Number(selectedOption.getAttribute('data-remaining'));
+
+      if (recipientId) {
+        recipientSelect.value = recipientId;
+      }
+      recipientSelect.disabled = true;
+
+      if (!amountInput.value && Number.isFinite(remaining) && remaining > 0) {
+        amountInput.value = remaining.toFixed(2);
+      }
+
+      hint.textContent = Number.isFinite(remaining) && remaining > 0
+        ? 'Linked request selected. Recipient is locked to the requester. Remaining: ' + formatAmount(remaining)
+        : 'Linked request selected. Recipient is locked to the requester.';
+    }
+
+    function refreshLinkedRequestOptions() {
+      var linkedSelect = document.getElementById('pay-linked-request');
+      if (!linkedSelect || !currentUser) {
+        return;
+      }
+
+      var previousValue = linkedSelect.value;
+      var linkableRequests = getLinkableRequestsForPayment();
+      linkedSelect.innerHTML = '<option value="">-- No linked request --</option>';
+
+      linkableRequests.forEach(function(req) {
+        var option = document.createElement('option');
+        var requesterName = getUserName(req.from_id);
+        var reasonText = req.reason ? ' - ' + req.reason : '';
+        option.value = req.id;
+        option.setAttribute('data-recipient-id', req.from_id);
+        option.setAttribute('data-remaining', String(req.remaining));
+        option.textContent = requesterName + ' | ' + formatAmount(req.remaining) + ' remaining' + reasonText;
+        linkedSelect.appendChild(option);
+      });
+
+      if (previousValue) {
+        var hasPrevious = linkableRequests.some(function(req) { return req.id === previousValue; });
+        if (hasPrevious) {
+          linkedSelect.value = previousValue;
+        }
+      }
+
+      applyLinkedRequestSelection();
     }
 
     /** Handle accepting or rejecting a request — calls server */
@@ -853,6 +1077,8 @@
 
     // ===== PAY TAB =====
     function refreshPayTab() {
+      refreshLinkedRequestOptions();
+
       var payments = cachedPayments;
       var uid = currentUser.id;
 
@@ -931,15 +1157,17 @@
 
     /** Send a new payment — calls server */
     async function sendPayment() {
+      var linkedRequestId = document.getElementById('pay-linked-request').value;
       var toId = document.getElementById('pay-user').value;
       var amount = document.getElementById('pay-amount').value;
+      var category = document.getElementById('pay-category').value.trim();
       var message = document.getElementById('pay-message').value.trim();
       var valid = true;
 
       hideError('pay-amount-error');
       hideError('pay-error');
 
-      if (!toId) {
+      if (!linkedRequestId && !toId) {
         showError('pay-error', 'Select a recipient');
         valid = false;
       }
@@ -953,11 +1181,22 @@
       if (!valid) return;
 
       try {
-        await api('POST', '/payments', { toId: toId, amount: amountNum, message: message });
+        var payload = {
+          amount: amountNum,
+          message: message,
+          category: category || undefined,
+          toId: toId || undefined,
+          requestId: linkedRequestId || undefined
+        };
 
+        await api('POST', '/payments', payload);
+
+        document.getElementById('pay-linked-request').value = '';
         document.getElementById('pay-user').value = '';
         document.getElementById('pay-amount').value = '';
+        document.getElementById('pay-category').value = '';
         document.getElementById('pay-message').value = '';
+        applyLinkedRequestSelection();
 
         await refreshApp();
       } catch (e) {
@@ -1110,6 +1349,11 @@
         li.textContent = u.name + (u.id === currentUser.id ? ' (you)' : '');
         list.appendChild(li);
       });
+
+      var householdLoginIdInput = document.getElementById('settings-household-login-id');
+      if (householdLoginIdInput) {
+        householdLoginIdInput.value = cachedHousehold?.loginId || cachedHousehold?.login_id || '';
+      }
     }
 
     /** Change the current user's PIN — calls server */
@@ -1209,6 +1453,25 @@
       }
     }
 
+    async function rotateHouseholdLoginCode() {
+      hideError('settings-household-login-error');
+
+      try {
+        var rotated = await api('POST', '/auth/household/login-code/rotate', {});
+        document.getElementById('settings-household-login-id').value = rotated.householdLoginId || '';
+        document.getElementById('settings-household-login-code').value = rotated.householdCode || '';
+
+        try {
+          await copyTextToClipboard(rotated.householdCode || '');
+          showError('settings-household-login-error', 'Household code rotated and copied');
+        } catch (copyErr) {
+          showError('settings-household-login-error', 'Household code rotated. Copy it from the field below');
+        }
+      } catch (e) {
+        showError('settings-household-login-error', e.message || 'Failed to rotate household code');
+      }
+    }
+
     /** Reset all server data (requires backend ALLOW_DATA_RESET=true) */
     async function resetAllData() {
       var approved = confirm('This will delete ALL server data for every user. Continue?');
@@ -1260,6 +1523,14 @@
         authSelect.classList.remove('hidden');
       });
 
+      document.getElementById('btn-login-household').addEventListener('click', resolveHouseholdForLogin);
+      document.getElementById('login-household-id').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') resolveHouseholdForLogin();
+      });
+      document.getElementById('login-household-code').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') resolveHouseholdForLogin();
+      });
+      document.getElementById('btn-change-household').addEventListener('click', changeLoginHousehold);
       document.getElementById('btn-login').addEventListener('click', attemptLogin);
       document.getElementById('login-pin').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') attemptLogin();
@@ -1312,10 +1583,12 @@
       });
 
       document.getElementById('btn-send-request').addEventListener('click', sendRequest);
+      document.getElementById('pay-linked-request').addEventListener('change', applyLinkedRequestSelection);
       document.getElementById('btn-send-payment').addEventListener('click', sendPayment);
       document.getElementById('btn-change-pin').addEventListener('click', changePin);
       document.getElementById('btn-generate-invite').addEventListener('click', generateHouseholdInvite);
       document.getElementById('btn-copy-invite').addEventListener('click', copyHouseholdInviteCode);
+      document.getElementById('btn-rotate-household-code').addEventListener('click', rotateHouseholdLoginCode);
       document.getElementById('btn-reset-data').addEventListener('click', resetAllData);
       document.getElementById('btn-dashboard-empty-action').addEventListener('click', handleDashboardEmptyAction);
     }

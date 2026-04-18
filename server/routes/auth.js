@@ -1,9 +1,25 @@
 const express = require('express');
 const db = require('../db');
-const { authenticateToken, issueSessionToken, revokeSession, requireRole } = require('../middleware/auth');
+const {
+  authenticateToken,
+  issueSessionToken,
+  issueHouseholdAccessToken,
+  verifyHouseholdAccessToken,
+  revokeSession,
+  requireRole,
+  HOUSEHOLD_ACCESS_TTL_MINUTES
+} = require('../middleware/auth');
 const crypto = require('crypto');
-const { consumeInvite, createHousehold, createInvite, getUserHousehold } = require('../services/households');
+const {
+  consumeInvite,
+  createHousehold,
+  createInvite,
+  getUserHousehold,
+  getHouseholdByLoginId,
+  rotateHouseholdLoginCode
+} = require('../services/households');
 const { hashPin, verifyPin, needsPinRehash } = require('../services/pin-security');
+const { isValidHouseholdCode, normalizeHouseholdLoginId } = require('../services/household-login');
 
 const router = express.Router();
 const MAX_LOGIN_ATTEMPTS = Number.parseInt(process.env.PIN_MAX_ATTEMPTS || '5', 10);
@@ -37,9 +53,49 @@ router.get('/users', (req, res) => {
       'SELECT id, household_id, name, role, created_at FROM users WHERE household_id = ? ORDER BY created_at ASC'
     ).all(String(req.query.householdId));
   } else {
-    users = db.prepare('SELECT id, household_id, name, role, created_at FROM users ORDER BY created_at ASC').all();
+    return res.status(400).json({ error: 'inviteCode or householdId query parameter is required' });
   }
   res.json(users);
+});
+
+// POST /api/auth/household/access — validate household login ID + code and return members
+router.post('/household/access', (req, res) => {
+  const householdLoginId = normalizeHouseholdLoginId(req.body?.householdLoginId);
+  const householdCode = String(req.body?.householdCode || '').trim();
+
+  if (!householdLoginId) {
+    return res.status(400).json({ error: 'Household login ID is required' });
+  }
+
+  if (!isValidHouseholdCode(householdCode)) {
+    return res.status(400).json({ error: 'Household code must be 6 digits' });
+  }
+
+  const household = getHouseholdByLoginId(householdLoginId);
+  if (!household || !verifyPin(householdCode, household.login_code_hash).matched) {
+    return res.status(401).json({ error: 'Invalid household login credentials' });
+  }
+
+  const members = db.prepare(
+    'SELECT id, household_id, name, role, created_at FROM users WHERE household_id = ? ORDER BY created_at ASC'
+  ).all(household.id);
+
+  if (members.length === 0) {
+    return res.status(404).json({ error: 'No users found for this household' });
+  }
+
+  const accessToken = issueHouseholdAccessToken(household.id);
+  return res.json({
+    accessToken,
+    expiresInSeconds: HOUSEHOLD_ACCESS_TTL_MINUTES * 60,
+    household: {
+      id: household.id,
+      name: household.name,
+      login_id: household.login_id,
+      loginId: household.login_id
+    },
+    members
+  });
 });
 
 // GET /api/auth/invites/:code — validate invite and preview household/members
@@ -106,6 +162,7 @@ router.post('/register', (req, res) => {
   const createdAt = new Date().toISOString();
   let householdId = null;
   let inviteResolution = null;
+  let createdHousehold = null;
 
   if (inviteCode) {
     const inviteRow = db.prepare('SELECT household_id FROM household_invites WHERE code = ?').get(String(inviteCode).trim());
@@ -114,13 +171,15 @@ router.post('/register', (req, res) => {
     }
     householdId = inviteRow.household_id;
   } else if (shouldCreateHousehold) {
-    householdId = createHousehold(householdName || `${trimmedName}'s household`).id;
+    createdHousehold = createHousehold(householdName || `${trimmedName}'s household`);
+    householdId = createdHousehold.id;
   } else {
     const firstHousehold = db.prepare('SELECT id FROM households ORDER BY created_at ASC LIMIT 1').get();
     if (firstHousehold) {
       householdId = firstHousehold.id;
     } else {
-      householdId = createHousehold(householdName || `${trimmedName}'s household`).id;
+      createdHousehold = createHousehold(householdName || `${trimmedName}'s household`);
+      householdId = createdHousehold.id;
     }
   }
 
@@ -142,18 +201,40 @@ router.post('/register', (req, res) => {
   }
 
   const token = issueSessionToken(id, req);
-  res.status(201).json({ token, user: { id, household_id: householdId, name: trimmedName, role, created_at: createdAt } });
+  const responseBody = {
+    token,
+    user: { id, household_id: householdId, name: trimmedName, role, created_at: createdAt }
+  };
+
+  if (createdHousehold) {
+    responseBody.householdAuth = {
+      householdLoginId: createdHousehold.login_id,
+      householdCode: createdHousehold.login_code_plain
+    };
+  }
+
+  res.status(201).json(responseBody);
 });
 
 // POST /api/auth/login — Login with user ID + PIN
 router.post('/login', (req, res) => {
-  const { userId, pin } = req.body ?? {};
+  const { userId, pin, householdAccessToken } = req.body ?? {};
 
   if (!userId || !pin) {
     return res.status(400).json({ error: 'User ID and PIN required' });
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  let householdAccess = null;
+  if (householdAccessToken) {
+    householdAccess = verifyHouseholdAccessToken(householdAccessToken);
+    if (!householdAccess.valid) {
+      return res.status(403).json({ error: 'Household access expired. Re-enter household login details.' });
+    }
+  }
+
+  const user = householdAccess?.householdId
+    ? db.prepare('SELECT * FROM users WHERE id = ? AND household_id = ?').get(userId, householdAccess.householdId)
+    : db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
@@ -220,7 +301,16 @@ router.get('/household', authenticateToken, (req, res) => {
   }
 
   const memberCount = db.prepare('SELECT COUNT(*) as total FROM users WHERE household_id = ?').get(household.id).total;
-  return res.json({ ...household, memberCount });
+  return res.json({ ...household, loginId: household.login_id, memberCount });
+});
+
+// GET /api/auth/household/members — list members in current household
+router.get('/household/members', authenticateToken, (req, res) => {
+  const members = db.prepare(
+    'SELECT id, household_id, name, role, created_at FROM users WHERE household_id = ? ORDER BY created_at ASC'
+  ).all(req.householdId);
+
+  return res.json(members);
 });
 
 // POST /api/auth/household/invites — create join invite for current household
@@ -228,6 +318,20 @@ router.post('/household/invites', authenticateToken, requireRole('admin'), (req,
   const ttlHours = Number.parseInt(req.body?.ttlHours || '24', 10);
   const invite = createInvite(req.householdId, req.userId, Number.isInteger(ttlHours) && ttlHours > 0 ? ttlHours : 24);
   return res.status(201).json(invite);
+});
+
+// POST /api/auth/household/login-code/rotate — rotate household login code (admin)
+router.post('/household/login-code/rotate', authenticateToken, requireRole('admin'), (req, res) => {
+  const rotated = rotateHouseholdLoginCode(req.householdId);
+  if (!rotated) {
+    return res.status(404).json({ error: 'Household not found' });
+  }
+
+  return res.status(201).json({
+    message: 'Household login code rotated',
+    householdLoginId: rotated.login_id,
+    householdCode: rotated.login_code_plain
+  });
 });
 
 // PATCH /api/auth/household/members/:userId/role — admin-only role management within household

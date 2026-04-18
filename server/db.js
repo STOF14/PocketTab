@@ -1,5 +1,11 @@
 const Database = require('better-sqlite3');
 const { ensureDbDirectory, resolveDbPath } = require('./db-path');
+const { hashPin } = require('./services/pin-security');
+const {
+  normalizeHouseholdLoginId,
+  generateHouseholdCode,
+  generateUniqueHouseholdLoginId
+} = require('./services/household-login');
 
 const dbPath = resolveDbPath();
 ensureDbDirectory(dbPath);
@@ -15,6 +21,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS households (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    login_id TEXT,
+    login_code_hash TEXT,
     created_at TEXT NOT NULL
   );
 
@@ -180,7 +188,52 @@ function ensureColumn(table, definition) {
   }
 }
 
+function ensureHouseholdLoginCredentials() {
+  const households = db.prepare('SELECT id, login_id, login_code_hash FROM households ORDER BY created_at ASC').all();
+  if (households.length === 0) {
+    return;
+  }
+
+  const findByNormalizedLoginId = db.prepare('SELECT id FROM households WHERE UPPER(login_id) = ? LIMIT 1');
+  const updateHouseholdLoginAuth = db.prepare('UPDATE households SET login_id = ?, login_code_hash = ? WHERE id = ?');
+
+  for (const household of households) {
+    const normalizedLoginId = normalizeHouseholdLoginId(household.login_id);
+    let nextLoginId = normalizedLoginId;
+    let nextLoginCodeHash = household.login_code_hash;
+    let shouldUpdate = false;
+
+    if (nextLoginId) {
+      const conflicting = findByNormalizedLoginId.get(nextLoginId);
+      if (conflicting && conflicting.id !== household.id) {
+        nextLoginId = '';
+        shouldUpdate = true;
+      }
+    }
+
+    if (!nextLoginId) {
+      nextLoginId = generateUniqueHouseholdLoginId((candidate) => {
+        const existing = findByNormalizedLoginId.get(candidate);
+        return Boolean(existing && existing.id !== household.id);
+      });
+      shouldUpdate = true;
+    }
+
+    if (!nextLoginCodeHash || String(nextLoginCodeHash).trim() === '') {
+      nextLoginCodeHash = hashPin(generateHouseholdCode());
+      shouldUpdate = true;
+    }
+
+    if (shouldUpdate || nextLoginId !== household.login_id) {
+      updateHouseholdLoginAuth.run(nextLoginId, nextLoginCodeHash, household.id);
+    }
+  }
+}
+
 function ensureBaseMigrations() {
+  ensureColumn('households', 'login_id TEXT');
+  ensureColumn('households', 'login_code_hash TEXT');
+
   ensureColumn('users', 'household_id TEXT');
   ensureColumn('users', "role TEXT NOT NULL DEFAULT 'child'");
   ensureColumn('users', 'failed_login_attempts INTEGER NOT NULL DEFAULT 0');
@@ -206,12 +259,16 @@ function ensureBaseMigrations() {
   const householdCount = db.prepare('SELECT COUNT(*) AS total FROM households').get().total;
   if (householdCount === 0) {
     const createdAt = new Date().toISOString();
-    db.prepare('INSERT INTO households (id, name, created_at) VALUES (?, ?, ?)').run(
+    db.prepare('INSERT INTO households (id, name, login_id, login_code_hash, created_at) VALUES (?, ?, ?, ?, ?)').run(
       'default-household',
       'Default household',
+      generateUniqueHouseholdLoginId(() => false),
+      hashPin(generateHouseholdCode()),
       createdAt
     );
   }
+
+  ensureHouseholdLoginCredentials();
 
   db.exec("UPDATE users SET household_id = 'default-household' WHERE household_id IS NULL OR TRIM(household_id) = ''");
 
@@ -250,6 +307,7 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_recurring_next_run ON recurring_requests
 db.exec('CREATE INDEX IF NOT EXISTS idx_allowances_child_active ON allowances(child_id, active)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_attachments_ref ON attachments(ref_type, ref_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_users_household ON users(household_id)');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_households_login_id ON households(login_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_household_invites_lookup ON household_invites(code, household_id, used_at, expires_at)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_rate_limit_window_start ON rate_limit_attempts(window_start)');
 

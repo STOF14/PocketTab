@@ -431,7 +431,8 @@ test('family of 4 full advanced feature suite', async () => {
     .send({ confirmation: 'RESET EVERYTHING' });
   assert.equal(resetOk.status, 200);
 
-  const usersAfterReset = await request(app).get('/api/auth/users');
+  const usersAfterReset = await request(app)
+    .get(`/api/auth/users?householdId=${family.mom.user.household_id}`);
   assert.equal(usersAfterReset.status, 200);
   assert.equal(usersAfterReset.body.length, 0);
 
@@ -1786,4 +1787,98 @@ test('everyday five-person family flow uses all major features', async () => {
     .post('/api/auth/login')
     .send({ userId: childGeneral.user.id, pin: '5656' });
   assert.equal(reloginAfterReset.status, 200);
+});
+
+test('new household registration returns PT login credentials', async () => {
+  const suffix = uniqueSuffix();
+  const registration = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `HouseholdAuth-${suffix}`,
+      pin: '7788',
+      createHousehold: true,
+      householdName: `Household Auth ${suffix}`
+    });
+
+  assert.equal(registration.status, 201);
+  assert.ok(registration.body.householdAuth);
+  assert.match(registration.body.householdAuth.householdLoginId, /^PT-[A-Z]+(?:-[A-F0-9]{4})?$/);
+  assert.match(registration.body.householdAuth.householdCode, /^\d{6}$/);
+});
+
+test('household access endpoint gates member login to the resolved household', async () => {
+  const suffix = uniqueSuffix();
+
+  const adminRes = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `AccessAdmin-${suffix}`,
+      pin: '1111',
+      createHousehold: true,
+      householdName: `Access Household ${suffix}`
+    });
+  assert.equal(adminRes.status, 201);
+
+  const inviteRes = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(adminRes.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(inviteRes.status, 201);
+
+  const memberRes = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `AccessMember-${suffix}`, pin: '2222', inviteCode: inviteRes.body.code });
+  assert.equal(memberRes.status, 201);
+
+  const outsiderRes = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `AccessOutsider-${suffix}`,
+      pin: '3333',
+      createHousehold: true,
+      householdName: `Other Household ${suffix}`
+    });
+  assert.equal(outsiderRes.status, 201);
+
+  const badAccess = await request(app)
+    .post('/api/auth/household/access')
+    .send({
+      householdLoginId: adminRes.body.householdAuth.householdLoginId,
+      householdCode: '000000'
+    });
+  assert.equal(badAccess.status, 401);
+
+  const access = await request(app)
+    .post('/api/auth/household/access')
+    .send({
+      householdLoginId: adminRes.body.householdAuth.householdLoginId,
+      householdCode: adminRes.body.householdAuth.householdCode
+    });
+  assert.equal(access.status, 200);
+  assert.ok(Array.isArray(access.body.members));
+  assert.ok(access.body.members.some((u) => u.id === memberRes.body.user.id));
+
+  const memberLogin = await request(app)
+    .post('/api/auth/login')
+    .send({
+      userId: memberRes.body.user.id,
+      pin: '2222',
+      householdAccessToken: access.body.accessToken
+    });
+  assert.equal(memberLogin.status, 200);
+
+  const outsiderLoginDenied = await request(app)
+    .post('/api/auth/login')
+    .send({
+      userId: outsiderRes.body.user.id,
+      pin: '3333',
+      householdAccessToken: access.body.accessToken
+    });
+  assert.equal(outsiderLoginDenied.status, 404);
+});
+
+test('auth users endpoint requires inviteCode or householdId scope', async () => {
+  const res = await request(app).get('/api/auth/users');
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /inviteCode|householdId/i);
 });

@@ -1,316 +1,520 @@
 # PocketTab
 
-**Brutalist Family Expense Tracker** — Track shared expenses, send payment requests, and settle debts across multiple users and devices.
+PocketTab is a household expense tracking app for families. It supports multiple households, role-based permissions, requests, payments, settlements, recurring flows, notifications, chat, attachments, and operational tooling (health checks and backups).
 
-## Features
+## Table of Contents
 
-- **Household tenancy** — Multi-household support with invite-code onboarding and household-scoped access control
-- **Role-aware access** — `admin`, `parent`, and `member/child` role workflows
-- **PIN auth + session controls** — 4-digit PIN login, lockout on repeated failures, revocable sessions
-- **PIN recovery assistance** — In-household assisted reset flow (`pin-recovery-request`, parent/admin reset)
-- **Money requests** — Create, approve/reject, and partially settle request balances
-- **Recurring requests** — Weekly/monthly recurring rules with due-run generation
-- **Payments** — Send payments with confirm/dispute recipient workflow
-- **Settlement engine API** — Net balances and suggested minimal transfers (`/api/settlements/net`)
-- **Chat + attachments** — Message threads and file attachments on requests/payments
-- **Notifications + reminders** — In-app notifications and stale-item reminder generation
-- **Reporting** — Summary, trends, CSV export, and lightweight PDF-like export endpoints
-- **Dashboard + history** — At-a-glance balances and activity timeline
+1. [What PocketTab Is](#what-pockettab-is)
+2. [Core Capabilities](#core-capabilities)
+3. [Architecture](#architecture)
+4. [Authentication and Authorization Model](#authentication-and-authorization-model)
+5. [Quick Start](#quick-start)
+6. [Environment Variables](#environment-variables)
+7. [Project Structure](#project-structure)
+8. [Data Model Overview](#data-model-overview)
+9. [API Reference](#api-reference)
+10. [Frontend Runtime Behavior](#frontend-runtime-behavior)
+11. [Operations Runbook](#operations-runbook)
+12. [Deployment Guide](#deployment-guide)
+13. [Testing Guide](#testing-guide)
+14. [Security Model](#security-model)
+15. [Known Gaps and Non-Goals](#known-gaps-and-non-goals)
+16. [Troubleshooting](#troubleshooting)
 
-## Tech Stack
+## What PocketTab Is
 
-- **Backend**: Node.js + Express
-- **Database**: SQLite (via better-sqlite3)
-- **Auth**: bcrypt PIN hashing + JWT sessions
-- **Frontend**: Vanilla HTML/CSS/JS (brutalist design)
-- **Currency**: ZAR (South African Rand)
+PocketTab is designed for shared household finance coordination:
 
-## Getting Started
+- Who owes who, and why
+- Request/accept/reject money requests
+- Send and confirm/dispute payments
+- Keep communication attached to the request/payment context
+- Enforce household boundaries and role permissions
+
+UI style is intentionally minimalist/brutalist and the backend is an API-first Node.js + Express service backed by SQLite.
+
+## Core Capabilities
+
+- Multi-household tenancy with strict household-scoped data access
+- Household-first login flow:
+  - Household login ID in temporary format `PT-{FRUIT}`
+  - 6-digit household code
+  - Member selection
+  - Member PIN
+- Role-aware controls:
+  - `admin`
+  - `parent`
+  - `child` (public-facing member role maps to child in storage)
+- Session management:
+  - JWT access tokens
+  - Session table with revocation and activity metadata
+  - Session revocation endpoints
+- Request lifecycle:
+  - pending, accepted, rejected, partially settled, settled
+  - child request approval path
+- Payment lifecycle:
+  - sent, confirmed, disputed
+  - optional payment-to-request linking
+- Recurring requests and scheduled generation endpoint
+- Allowances with approval thresholds
+- Settlement suggestions for netting household balances
+- Notification system and stale-item reminders
+- Contextual messaging and file attachments on requests/payments
+- Reports (summary, trends, CSV, lightweight PDF-like output)
+- Production-minded operations:
+  - health endpoint
+  - backup, restore, backup verification scripts
+  - smoke-test script
+
+## Architecture
+
+### Backend
+
+- Runtime: Node.js
+- Framework: Express 5
+- DB: SQLite via `better-sqlite3`
+- Auth/session: JWT + session persistence
+- Password/PIN hashing: `bcryptjs`
+- Rate limiting: `express-rate-limit` with SQLite-backed store
+
+### Frontend
+
+- Vanilla HTML/CSS/JS
+- Served by the same Express app (same-origin API requests)
+- Uses `localStorage` for token and current user cache
+
+### Request Processing
+
+- Middleware enforces JSON content type on API POST/PATCH requests
+- Security headers and structured request logging are enabled
+- Global and auth route-specific rate limits are applied (except in tests or when disabled)
+
+## Authentication and Authorization Model
+
+### Household-First Login (Current Primary UX)
+
+1. User enters household login ID and household code.
+2. `POST /api/auth/household/access` validates household credentials.
+3. Backend returns a short-lived household access token and member list.
+4. User selects member profile and enters 4-digit PIN.
+5. `POST /api/auth/login` validates PIN and issues a full session token.
+
+### Compatibility Behavior
+
+`POST /api/auth/login` still accepts direct `userId + pin` without `householdAccessToken` for compatibility with existing clients/tests.
+
+### Role Rules (High-level)
+
+- `admin`: full household admin operations, invite generation, household code rotation, member role changes
+- `parent`: elevated member management for child flows (such as PIN reset assistance)
+- `child`: regular member operations with restricted admin/parent actions
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 18+ (or newer LTS)
+- npm
+
+### Install and run
 
 ```bash
-# Install dependencies
 npm install
-
-# Start the server
 npm start
-
-# Run automated API tests
-npm test
-
-# Create a database backup now
-npm run backup:db
 ```
 
-The app will be available at <http://localhost:3000>.
+App URL: <http://localhost:3000>
+
+### Run tests
+
+```bash
+npm test
+```
+
+### Useful scripts
+
+```bash
+npm run backup:db
+npm run verify:backups
+npm run restore:db -- /absolute/path/to/backup.db
+npm run smoke:staging
+npm run monitor:health
+```
 
 ## Environment Variables
 
+### Runtime and security
+
 | Variable | Default | Description |
-| -------- | ------- | ----------- |
-| `PORT` | `3000` | Server port |
-| `JWT_SECRET` | required; ephemeral random fallback only when missing outside production | Secret key for JWT tokens (must be explicitly set in development, staging, and production) |
-| `PIN_PEPPER` | required; ephemeral random fallback only when missing outside production | Server-side PIN pepper appended before hashing |
-| `PIN_BCRYPT_ROUNDS` | `12` (minimum `12`) | Bcrypt cost factor for PIN hashing |
-| `NODE_ENV` | `development` | Set to `production` to enforce strict secret and pepper handling |
-| `DB_PATH` | `./pockettab.db` (dev), auto `/var/data/pockettab.db` on Render production | SQLite database file path override |
-| `ALLOW_EPHEMERAL_RENDER_DB_FALLBACK` | `false` | Emergency-only: when `true`, allows Render production startup without `/var/data` by using app-local ephemeral DB |
-| `ALLOW_DATA_RESET` | `false` | Set `true` to enable `DELETE /api/users/reset-all` |
-| `SLOW_REQUEST_MS` | `1000` | Warn-level logging threshold for slow HTTP requests |
-| `JSON_BODY_LIMIT` | `1mb` in production, else `10mb` | Max JSON request payload size |
-| `TRUST_PROXY` | `1` in production, else `false` | Express trust-proxy setting for HTTPS/load balancer setups |
-| `SESSION_TTL_DAYS` | `7` (clamped to 1-30) | JWT/session lifetime in days |
-| `RATE_LIMIT_WINDOW_MS` | `60000` | Shared time window for API rate limits |
-| `GLOBAL_RATE_LIMIT_MAX` | `300` in production, else `100` | Max API requests per IP per window |
-| `AUTH_RATE_LIMIT_MAX` | `30` in production, else `10` | Max login/register requests per IP per window |
-| `DB_BACKUP_DIR` | `./backups` | Directory where backup files are written |
-| `DB_BACKUP_KEEP` | `14` | Number of recent backups to keep (older ones are pruned) |
-| `DB_BACKUP_MIN_COUNT` | `1` | Minimum backup count expected by backup verification |
-| `DB_BACKUP_MAX_AGE_HOURS` | `30` | Maximum age for latest backup in verification checks |
+| --- | --- | --- |
+| `NODE_ENV` | `development` | Set to `production` for strict production behavior |
+| `PORT` | `3000` | Server listen port |
+| `JWT_SECRET` | required in production | JWT signing secret |
+| `PIN_PEPPER` | required in production | Server-side pepper appended to PIN before hashing |
+| `PIN_BCRYPT_ROUNDS` | `12` (minimum 12) | bcrypt cost factor for PIN hashing |
+| `SESSION_TTL_DAYS` | `7` (clamped 1-30) | Session/JWT lifetime in days |
+| `HOUSEHOLD_ACCESS_TTL_MINUTES` | `10` (clamped 1-30) | Temporary household-access token lifetime |
+| `PIN_MAX_ATTEMPTS` | `5` | Failed login attempts before lock |
+| `PIN_LOCK_MINUTES` | `15` | Lockout duration |
+
+### Database path and durability
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DB_PATH` | dev: `./pockettab.db`, production: required unless Render `/var/data` fallback applies | SQLite file path |
+| `ALLOW_EPHEMERAL_RENDER_DB_FALLBACK` | `false` | Emergency-only Render fallback to ephemeral local DB |
+
+### API behavior and limits
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `JSON_BODY_LIMIT` | production `1mb`, otherwise `10mb` | Max JSON body size |
+| `SLOW_REQUEST_MS` | `1000` | Slow request log threshold |
+| `TRUST_PROXY` | production `1`, otherwise `false` | Express proxy trust config |
+| `DISABLE_RATE_LIMIT` | `false` (test commonly sets true) | Disable API rate limiting |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window |
+| `GLOBAL_RATE_LIMIT_MAX` | production `300`, otherwise `100` | Global request cap per window |
+| `AUTH_RATE_LIMIT_MAX` | production `30`, otherwise `10` | Auth request cap per window |
+
+### Administrative safety switches
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ALLOW_DATA_RESET` | `false` | Enables `DELETE /api/users/reset-all` |
+
+### Backup and restore tooling
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DB_BACKUP_DIR` | `./backups` | Backup output directory |
+| `DB_BACKUP_KEEP` | `14` | Number of backups to retain |
+| `DB_BACKUP_MIN_COUNT` | `1` | Minimum expected backup files |
+| `DB_BACKUP_MAX_AGE_HOURS` | `30` | Max age of latest backup |
+| `DB_BACKUP_FILE` | unset | Specific backup file for verify-restore script |
+
+### Monitoring and smoke scripts
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `HEALTH_URL` | required by monitor script | Full health endpoint URL |
+| `HEALTH_TIMEOUT_MS` | `5000` | Health check request timeout |
+| `SMOKE_BASE_URL` | required by smoke script | Base URL for smoke tests |
+| `SMOKE_TEST_PIN` | `1234` | PIN used by smoke script-created users |
+| `SMOKE_TIMEOUT_MS` | `10000` | Smoke API timeout |
 
 ## Project Structure
 
 ```text
+.
 ├── public/
-│   ├── index.html          # Frontend markup
-│   ├── styles.css          # Frontend styles
-│   └── app.js              # Frontend app logic
+│   ├── app.js
+│   ├── index.html
+│   └── styles.css
 ├── scripts/
-│   ├── backup-db.js         # Automated SQLite backup + retention pruning
-│   ├── check-backups.js     # Backup freshness/retention verification
-│   ├── monitor-health.js    # Health endpoint monitor script
-│   ├── restore-db.js        # DB restore utility
-│   ├── smoke-check.js       # Post-deploy smoke tests
+│   ├── backup-db.js
+│   ├── check-backups.js
+│   ├── monitor-health.js
+│   ├── restore-db.js
+│   ├── smoke-check.js
 │   └── verify-backup-restore.js
 ├── server/
-│   ├── app.js               # Express app (exported for tests)
-│   ├── index.js             # Server entry point (listen)
-│   ├── db.js                # SQLite database setup
+│   ├── app.js
+│   ├── config.js
+│   ├── db-path.js
+│   ├── db.js
+│   ├── index.js
 │   ├── middleware/
-│   │   ├── auth.js          # JWT authentication middleware
-│   │   ├── household.js     # Household tenancy guards
-│   │   └── observability.js # Structured logging and error handling
-│   └── routes/
-│       ├── auth.js          # Register, login, list users
-│       ├── allowances.js
-│       ├── attachments.js
-│       ├── requests.js      # Money request CRUD
-│       ├── payments.js      # Payment CRUD
-│       ├── messages.js      # Chat messages
-│       ├── notifications.js
-│       ├── recurring.js
-│       ├── reports.js
-│       ├── settlements.js
-│       └── users.js         # PIN, role, sessions, recovery, reset endpoints
-├── .github/
-│   └── workflows/
-│       └── ci.yml           # GitHub Actions: install + test on push/PR
+│   ├── routes/
+│   └── services/
 ├── test/
-│   └── api.test.js          # Node test runner + Supertest API tests
+│   └── api.test.js
+├── backups/
+├── uploads/
+│   └── attachments/
 ├── package.json
 └── README.md
 ```
 
-## Data Model Note
+## Data Model Overview
 
-- Amounts are persisted using integer cents (`amount_cents`) to avoid floating-point drift.
-- API responses still return `amount` as decimal ZAR values for frontend compatibility.
+Primary tables include:
 
-## API Endpoints
+- `households`
+- `household_invites`
+- `users`
+- `requests`
+- `payments`
+- `messages`
+- `sessions`
+- `notifications`
+- `recurring_requests`
+- `allowances`
+- `attachments`
+- `pin_reset_requests`
+- `rate_limit_attempts`
+
+Important notes:
+
+- Monetary values are persisted in integer cents (`*_cents`) for correctness.
+- Legacy decimal amount fields are still present for API compatibility.
+- Household login credentials are stored as:
+  - `households.login_id`
+  - `households.login_code_hash`
+- PIN and household codes are not stored in plaintext.
+
+## API Reference
+
+All API routes are mounted under `/api`.
 
 ### Health
 
 | Method | Endpoint | Auth | Description |
-| ------ | -------- | ---- | ----------- |
-| GET | `/api/health` | No | Service/database health check |
+| --- | --- | --- | --- |
+| GET | `/api/health` | No | Service and DB liveness |
 
-### Auth and Household
+### Auth and household
 
 | Method | Endpoint | Auth | Description |
-| ------ | -------- | ---- | ----------- |
-| GET | `/api/auth/users` | No | List users; supports `inviteCode` and `householdId` filters |
-| POST | `/api/auth/register` | No | Create user; supports `inviteCode`, or `createHousehold` + `householdName` |
-| POST | `/api/auth/login` | No | Login with PIN |
+| --- | --- | --- | --- |
+| GET | `/api/auth/users` | No | User listing with required scope (`inviteCode` or `householdId`) |
+| POST | `/api/auth/household/access` | No | Validate household ID/code and return members + temporary access token |
+| GET | `/api/auth/invites/:code` | No | Validate invite code and preview household |
+| POST | `/api/auth/register` | No | Register user (join by invite or create household) |
+| POST | `/api/auth/login` | No | Login with `userId + pin` and optional `householdAccessToken` |
 | POST | `/api/auth/logout` | Yes | Revoke current session |
-| GET | `/api/auth/invites/:code` | No | Validate invite and preview household/member list |
-| GET | `/api/auth/household` | Yes | Get current household details |
-| POST | `/api/auth/household/invites` | Yes (admin) | Create household join invite (`ttlHours`) |
-| PATCH | `/api/auth/household/members/:userId/role` | Yes (admin) | Set member role (`admin` or `member`) |
+| GET | `/api/auth/household` | Yes | Current household details |
+| GET | `/api/auth/household/members` | Yes | Members in current household |
+| POST | `/api/auth/household/invites` | Yes (admin) | Create invite code |
+| POST | `/api/auth/household/login-code/rotate` | Yes (admin) | Rotate household login code |
+| PATCH | `/api/auth/household/members/:userId/role` | Yes (admin) | Set household role (`admin` or `member`) |
 
-### Users, PIN, Sessions
+### Users, roles, PIN, sessions
 
 | Method | Endpoint | Auth | Description |
-| ------ | -------- | ---- | ----------- |
-| GET | `/api/users/me` | Yes | Get current user profile |
-| GET | `/api/users/members` | Yes (parent/admin) | List household members |
-| PATCH | `/api/users/:id/role` | Yes (admin) | Set role (`admin`, `parent`, `child`) |
+| --- | --- | --- | --- |
+| GET | `/api/users/me` | Yes | Current profile |
+| GET | `/api/users/members` | Yes (parent/admin) | Household member list |
+| PATCH | `/api/users/:id/role` | Yes (admin) | Set stored role (`admin`, `parent`, `child`) |
 | PATCH | `/api/users/pin` | Yes | Change own PIN |
-| POST | `/api/users/pin-recovery-request` | Yes | Request parent/admin PIN recovery help |
-| POST | `/api/users/:id/pin-reset` | Yes (parent/admin) | Reset another member's PIN |
+| POST | `/api/users/pin-recovery-request` | Yes | Request recovery help |
+| POST | `/api/users/:id/pin-reset` | Yes (parent/admin) | Reset another member PIN |
 | GET | `/api/users/sessions` | Yes | List sessions for self (or `userId` when admin) |
-| DELETE | `/api/users/sessions/:id` | Yes | Revoke session (self or admin) |
-| DELETE | `/api/users/reset-all` | Yes (parent/admin) | Reset household data (only when `ALLOW_DATA_RESET=true`) |
+| DELETE | `/api/users/sessions/:id` | Yes | Revoke session |
+| DELETE | `/api/users/reset-all` | Yes (parent/admin) | Household data reset (guarded by env switch) |
 
-### Requests and Payments
+### Requests and payments
 
 | Method | Endpoint | Auth | Description |
-| ------ | -------- | ---- | ----------- |
-| GET | `/api/requests` | Yes | List requests (`limit`/`offset` + filters/search) |
-| POST | `/api/requests` | Yes | Create money request |
-| PATCH | `/api/requests/:id` | Yes | Recipient accepts/rejects request |
+| --- | --- | --- | --- |
+| GET | `/api/requests` | Yes | List requests with filters, search, paging |
+| POST | `/api/requests` | Yes | Create request |
+| PATCH | `/api/requests/:id` | Yes | Accept/reject request |
 | POST | `/api/requests/:id/approve-child` | Yes (parent/admin) | Approve child request |
 | POST | `/api/requests/:id/reject-child` | Yes (parent/admin) | Reject child request |
-| GET | `/api/payments` | Yes | List payments (`limit`/`offset` + filters/search) |
-| POST | `/api/payments` | Yes | Send payment (optionally linked via `requestId`) |
-| PATCH | `/api/payments/:id` | Yes | Recipient confirms/disputes payment |
+| GET | `/api/payments` | Yes | List payments with filters, search, paging |
+| POST | `/api/payments` | Yes | Create payment (optional `requestId`) |
+| PATCH | `/api/payments/:id` | Yes | Confirm/dispute payment |
 
-### Messaging and Attachments
+### Messaging and attachments
 
 | Method | Endpoint | Auth | Description |
-| ------ | -------- | ---- | ----------- |
-| GET | `/api/messages` | Yes | List messages for `refType` + `refId` |
-| POST | `/api/messages` | Yes | Post message to request/payment thread |
-| GET | `/api/attachments` | Yes | List attachments for `refType` + `refId` |
+| --- | --- | --- | --- |
+| GET | `/api/messages` | Yes | List thread messages by `refType` and `refId` |
+| POST | `/api/messages` | Yes | Post message |
+| GET | `/api/attachments` | Yes | List attachments by `refType` and `refId` |
 | POST | `/api/attachments` | Yes | Upload base64 attachment |
 | GET | `/api/attachments/:id/download` | Yes | Download attachment |
-| DELETE | `/api/attachments/:id` | Yes | Delete attachment (owner or parent/admin) |
+| DELETE | `/api/attachments/:id` | Yes | Delete attachment |
 
 ### Notifications
 
 | Method | Endpoint | Auth | Description |
-| ------ | -------- | ---- | ----------- |
-| GET | `/api/notifications` | Yes | List notifications (`unreadOnly`, paging) |
-| PATCH | `/api/notifications/:id/read` | Yes | Mark one notification as read |
-| PATCH | `/api/notifications/read-all` | Yes | Mark all notifications as read |
-| POST | `/api/notifications/reminders/run` | Yes (parent/admin) | Generate stale pending reminders |
+| --- | --- | --- | --- |
+| GET | `/api/notifications` | Yes | List notifications |
+| PATCH | `/api/notifications/:id/read` | Yes | Mark one as read |
+| PATCH | `/api/notifications/read-all` | Yes | Mark all as read |
+| POST | `/api/notifications/reminders/run` | Yes (parent/admin) | Generate reminder notifications |
 
-### Recurring, Allowances, Settlements, Reports
+### Recurring, allowances, settlements, reports
 
 | Method | Endpoint | Auth | Description |
-| ------ | -------- | ---- | ----------- |
-| GET | `/api/recurring` | Yes | List recurring request rules |
+| --- | --- | --- | --- |
+| GET | `/api/recurring` | Yes | List recurring rules |
 | POST | `/api/recurring` | Yes (parent/admin) | Create recurring rule |
 | PATCH | `/api/recurring/:id` | Yes (parent/admin) | Update recurring rule |
-| POST | `/api/recurring/run` | Yes (parent/admin) | Trigger recurring generation run |
-| GET | `/api/allowances` | Yes | List allowance rules |
-| POST | `/api/allowances` | Yes (parent/admin) | Create allowance rule |
-| PATCH | `/api/allowances/:id` | Yes (parent/admin) | Update allowance rule |
-| GET | `/api/settlements/net` | Yes | Net balances + suggested transfers (`scope=mine` or `scope=household`) |
-| GET | `/api/reports/summary` | Yes | Aggregate report summary |
-| GET | `/api/reports/trends` | Yes | Monthly trend + categories |
+| POST | `/api/recurring/run` | Yes (parent/admin) | Execute recurring generation |
+| GET | `/api/allowances` | Yes | List allowances |
+| POST | `/api/allowances` | Yes (parent/admin) | Create allowance |
+| PATCH | `/api/allowances/:id` | Yes (parent/admin) | Update allowance |
+| GET | `/api/settlements/net` | Yes | Net balances and transfer suggestions |
+| GET | `/api/reports/summary` | Yes | Summary report |
+| GET | `/api/reports/trends` | Yes | Trend report |
 | GET | `/api/reports/export.csv` | Yes | CSV export |
 | GET | `/api/reports/export.pdf` | Yes | Lightweight PDF-like export |
 
-## Security Notes
+## Frontend Runtime Behavior
 
-- In production (`NODE_ENV=production`), both `JWT_SECRET` and `PIN_PEPPER` are mandatory.
-- PIN hashes use bcrypt cost factor `12` minimum with server-side peppering, and legacy hashes are re-hashed on next successful login.
-- PIN login attempts are lockout-protected (`PIN_MAX_ATTEMPTS`, `PIN_LOCK_MINUTES`).
-- Message read/write now checks request/payment ownership before access.
-- Global and auth-specific rate limits are active on API routes and persisted in SQLite so counters survive restarts.
+The frontend reads optional runtime config from `window.POCKETTAB_CONFIG`.
 
-## Operations
+Supported keys:
 
-### Monitoring and Logging
+- `requestTimeoutMs` (default 10000)
+- `maxSafeRetries` (default 2, GET requests only)
+- `retryBaseDelayMs` (default 300)
 
-- `GET /api/health` returns service/db health + uptime for uptime checks.
-- API responses include `X-Request-Id` for traceability.
-- Request and error logs are structured JSON, including status and latency.
+Other behavior:
 
-### Automated Backups
+- Token is stored in localStorage key `pt_token`
+- Current user is stored in localStorage key `pt_user`
+- API calls are made to same-origin `/api/*`
 
-- Run ad-hoc backup: `npm run backup:db`
-- Daily-style backup with 30 retention: `npm run backup:db:daily`
-- Verify backup freshness/retention policy: `npm run verify:backups`
-- Restore from a backup file: `npm run restore:db -- /absolute/path/to/pockettab-YYYYMMDD-....db`
-- For Linux cron, run backup once per day at 02:15:
+## Operations Runbook
+
+### Health monitoring
+
+- Endpoint: `GET /api/health`
+- Monitor script:
+
+```bash
+HEALTH_URL=https://your-domain/api/health npm run monitor:health
+```
+
+### Database backup
+
+Create backup now:
+
+```bash
+npm run backup:db
+```
+
+Daily backup (retention 30):
+
+```bash
+npm run backup:db:daily
+```
+
+Verify backups:
+
+```bash
+npm run verify:backups
+```
+
+### Restore database
+
+```bash
+npm run restore:db -- /absolute/path/to/backup.db
+```
+
+### Verify backup restore integrity
+
+```bash
+node scripts/verify-backup-restore.js
+# optionally pin file
+DB_BACKUP_FILE=/absolute/path/to/backup.db node scripts/verify-backup-restore.js
+```
+
+### Example cron entries
 
 ```bash
 15 2 * * * cd /path/to/PocketTab && npm run backup:db:daily >> /var/log/pockettab-backup.log 2>&1
-```
-
-- Verify backups shortly after backup and fail loudly to logs/mail/webhook:
-
-```bash
 25 2 * * * cd /path/to/PocketTab && npm run verify:backups >> /var/log/pockettab-backup-verify.log 2>&1 || logger -t pockettab-backup "backup verification failed"
 ```
 
-- Optional webhook alert example when verification fails:
+## Deployment Guide
+
+### Baseline production requirements
+
+- `NODE_ENV=production`
+- strong `JWT_SECRET`
+- strong `PIN_PEPPER`
+- durable `DB_PATH`
+- `TRUST_PROXY=1` behind reverse proxy/load balancer
+
+### Render-specific notes
+
+- If persistent disk exists at `/var/data` and `DB_PATH` is unset, PocketTab falls back to `/var/data/pockettab.db`.
+- If on Render in production without durable path, startup fails by default.
+- Emergency override exists via `ALLOW_EPHEMERAL_RENDER_DB_FALLBACK=true`, but data becomes non-durable.
+
+### Post-deploy smoke test
 
 ```bash
-25 2 * * * cd /path/to/PocketTab && npm run verify:backups >> /var/log/pockettab-backup-verify.log 2>&1 || curl -fsS -X POST https://example-alert-webhook -H 'Content-Type: application/json' -d '{"service":"pockettab","event":"backup_verify_failed"}'
+SMOKE_BASE_URL=https://your-domain npm run smoke:staging
 ```
 
-#### Restore Procedure
+## Testing Guide
 
-1. Stop writes to the app (maintenance mode / stop the app process).
-2. Restore from a known-good backup:
-   - `npm run restore:db -- /absolute/path/to/backup.db`
-3. Start the app.
-4. Run `npm run verify:backups` and `npm test` to confirm integrity.
+### Full suite
 
-### Deployment (Always-on + HTTPS)
+```bash
+npm test
+```
 
-- Keep the existing same-origin setup: Express serves both API and frontend.
-- Deploy behind HTTPS with a public domain (reverse proxy/load balancer).
-- Set production runtime vars at minimum:
-  - `NODE_ENV=production`
-  - `JWT_SECRET=<strong-random-secret>`
-  - `PIN_PEPPER=<random-32-byte-hex>`
-  - `DB_PATH=<durable managed volume path>`
-  - `TRUST_PROXY=1`
-- Render note: if `DB_PATH` is not set and a persistent disk is mounted at `/var/data`, PocketTab defaults to `/var/data/pockettab.db`.
-- If no persistent disk is mounted, startup now fails by default to prevent accidental non-durable storage in production.
-- Emergency-only override: set `ALLOW_EPHEMERAL_RENDER_DB_FALLBACK=true` to allow app-local `./pockettab.db` fallback (ephemeral data, not recommended for normal operation).
-- Run health monitoring against `GET /api/health`:
-  - `HEALTH_URL=https://your-domain/api/health npm run monitor:health`
-- Run staged smoke tests before release:
-  - `SMOKE_BASE_URL=https://your-domain npm run smoke:staging`
+### Focused test patterns
 
-### Token Handling Policy
+```bash
+node --test --test-name-pattern "household access" test/api.test.js
+```
 
-- Tokens are always sent as `Authorization: Bearer <token>`.
-- Session TTL is controlled by `SESSION_TTL_DAYS` (1-30 day guardrail).
-- In production, `JWT_SECRET` and `PIN_PEPPER` are mandatory.
+### What tests currently validate
 
-### Multi-family (Household Tenancy)
+- Multi-household isolation and cross-household denial behavior
+- Request and payment lifecycle transitions
+- Role and permission enforcement
+- Session handling and revocation
+- PIN lockout and PIN recovery/reset paths
+- Backup and operational integration behavior (where applicable)
 
-- Users are linked to a household (`users.household_id`) and core write operations are household-scoped.
-- New APIs:
-  - `GET /api/auth/invites/:code` — validate invite and preview household/members
-  - `GET /api/auth/household` — current household details
-  - `POST /api/auth/household/invites` — create join invite (admin only, supports `ttlHours`)
-  - `PATCH /api/auth/household/members/:userId/role` — assign household role (`admin` or `member`, admin only)
-- Registration supports:
-  - `inviteCode` to join an existing household
-  - `createHousehold: true` and optional `householdName` to start a new household
-- Invites are single-use and expire; backend rejects invalid/used/expired codes.
+## Security Model
 
-### PIN Recovery (Assisted)
+- Production requires `JWT_SECRET` and `PIN_PEPPER`
+- PIN and household code verification use bcrypt hashes
+- Session records include token hash and revocation state
+- Rate limiting protects global API and auth routes
+- JSON content-type enforcement helps reject malformed non-JSON writes
+- Household and role checks are enforced on protected resources
 
-- Child/member can request assistance: `POST /api/users/pin-recovery-request`.
-- Parent/admin can reset household member PIN: `POST /api/users/:id/pin-reset`.
-- Admin-only rule applies when resetting another admin PIN.
+## Known Gaps and Non-Goals
 
-## Current Product Gaps
+Current limitations:
 
-These are known limitations in the current product shape:
+- No self-service unauthenticated “forgot PIN” recovery flow
+- No built-in mediator workflow after payment disputes
+- No group split request model (requests are one-to-one)
+- No guest/read-only role
+- Settlement API exists, but guided settlement UX remains API-first
+- Household login ID format is intentionally temporary (`PT-{FRUIT}`), with suffix fallback if collisions increase
 
-- **No guest/observer role**: all users are active participants under `admin`/`parent`/`child` role model.
-- **No self-service forgot-PIN screen**: recovery currently depends on an authenticated parent/admin helper, not an unauthenticated login-reset flow.
-- **Flat household structure**: no sub-groups (for example, room/car/activity-level ledgers) within one household.
-- **One-to-one requests only**: group split requests are not modeled yet.
-- **Payment dispute is terminal**: `disputed` status exists, but there is no built-in mediation/escalation/reopen workflow.
-- **Settlement suggestions are API-first**: `/api/settlements/net` exists, but dashboard UI does not yet present guided settlement flows.
-- **Invite lifecycle visibility is limited**: expiry is shown when generated, but there is no dedicated endpoint/UI for historical invite usage tracking.
+## Troubleshooting
 
-### Frontend Runtime Network Config (Optional)
+### App fails on startup in production
 
-You can tune retry behavior by defining `window.POCKETTAB_CONFIG` before loading `app.js`:
+Likely missing one of:
 
-- `requestTimeoutMs` (default `10000`)
-- `maxSafeRetries` (default `2`, applied to `GET` requests only)
-- `retryBaseDelayMs` (default `300`)
+- `JWT_SECRET`
+- `PIN_PEPPER`
+- `DB_PATH` (or no Render persistent disk)
 
-### Continuous Integration
+### Render logs mention localhost URL
 
-- GitHub Actions workflow in `.github/workflows/ci.yml` runs `npm ci` and `npm test` on every push and pull request.
+This is expected process logging inside container context. Verify externally via your public URL and `/api/health`.
+
+### `415 Unsupported Media Type`
+
+POST/PATCH API routes require `Content-Type: application/json` when a body is sent.
+
+### `423 Account is temporarily locked`
+
+Too many failed PIN attempts. Wait for `PIN_LOCK_MINUTES` or perform a parent/admin PIN reset flow.
+
+### Backup verification fails
+
+Check:
+
+- `DB_BACKUP_DIR` exists and is writable
+- backup count and age thresholds (`DB_BACKUP_MIN_COUNT`, `DB_BACKUP_MAX_AGE_HOURS`)
+- cron execution output and permissions
+
+---
+
+If you are extending PocketTab, keep this README aligned with route changes, new env vars, and flow changes as part of the same PR.

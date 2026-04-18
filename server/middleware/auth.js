@@ -7,6 +7,21 @@ const { isParentOrAdmin } = require('../services/roles');
 const BEARER_PREFIX = 'Bearer ';
 const isProduction = config.isProduction;
 const SESSION_TTL_DAYS = config.sessionTtlDays;
+const MIN_HOUSEHOLD_ACCESS_TTL_MINUTES = 1;
+const MAX_HOUSEHOLD_ACCESS_TTL_MINUTES = 30;
+const DEFAULT_HOUSEHOLD_ACCESS_TTL_MINUTES = 10;
+
+function parseHouseholdAccessTtlMinutes(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed)) {
+    return DEFAULT_HOUSEHOLD_ACCESS_TTL_MINUTES;
+  }
+
+  return Math.min(MAX_HOUSEHOLD_ACCESS_TTL_MINUTES, Math.max(MIN_HOUSEHOLD_ACCESS_TTL_MINUTES, parsed));
+}
+
+const HOUSEHOLD_ACCESS_TTL_MINUTES = parseHouseholdAccessTtlMinutes(process.env.HOUSEHOLD_ACCESS_TTL_MINUTES);
+const HOUSEHOLD_ACCESS_PURPOSE = 'household_access';
 
 if (isProduction && !process.env.JWT_SECRET) {
   throw new Error('JWT_SECRET is required when NODE_ENV=production');
@@ -63,6 +78,31 @@ function revokeSession(sessionId) {
 function revokeAllSessionsForUser(userId) {
   const revokedAt = new Date().toISOString();
   return db.prepare('UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL').run(revokedAt, userId);
+}
+
+function issueHouseholdAccessToken(householdId) {
+  return jwt.sign(
+    {
+      householdId,
+      purpose: HOUSEHOLD_ACCESS_PURPOSE,
+      jti: crypto.randomUUID()
+    },
+    JWT_SECRET,
+    { expiresIn: `${HOUSEHOLD_ACCESS_TTL_MINUTES}m` }
+  );
+}
+
+function verifyHouseholdAccessToken(token) {
+  try {
+    const decoded = jwt.verify(String(token || ''), JWT_SECRET);
+    if (!decoded?.householdId || decoded?.purpose !== HOUSEHOLD_ACCESS_PURPOSE) {
+      return { valid: false, reason: 'invalid-purpose' };
+    }
+
+    return { valid: true, householdId: decoded.householdId };
+  } catch (err) {
+    return { valid: false, reason: 'invalid-token' };
+  }
 }
 
 function authenticateToken(req, res, next) {
@@ -169,10 +209,13 @@ function requireParentOrAdmin(req, res, next) {
 module.exports = {
   authenticateToken,
   issueSessionToken,
+  issueHouseholdAccessToken,
+  verifyHouseholdAccessToken,
   revokeSession,
   revokeAllSessionsForUser,
   requireRoles,
   requireRole,
   requireParentOrAdmin,
-  JWT_SECRET
+  JWT_SECRET,
+  HOUSEHOLD_ACCESS_TTL_MINUTES
 };
