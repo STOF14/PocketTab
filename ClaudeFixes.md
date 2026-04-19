@@ -1,6 +1,111 @@
-That said, here are 100 adversarial questions to throw at the codebase — organised by domain so Copilot can work through them systematically.
+# PocketTab Fix Backlog
 
----
+This file is the single source of truth for hardening findings and remediation planning.
+
+## Contents
+
+1. Prioritized Hardening Roadmap
+2. Additional Confirmed Findings (April 2026)
+3. Follow-up Checklist
+4. Adversarial Questions (1-100)
+
+## Prioritized Hardening Roadmap (Single Source Of Truth)
+
+This roadmap is intentionally opinionated and sorted by risk and impact. The tier labels are operational guidance, not strict deadlines.
+
+### Tier 1 - Fix Before Handling Real Money
+
+1. Remove dual money representation (`amount` + `amount_cents`) and make `_cents` the only source of truth.
+2. Move auth tokens from localStorage to httpOnly secure cookies.
+3. Add explicit Content-Security-Policy in security headers.
+4. Harden or remove `DELETE /api/users/reset-all`:
+	- Require admin only
+	- Require an out-of-band reset secret
+	- Write audit log before execution
+	- Prefer a CLI-only reset tool over an HTTP endpoint
+5. Remove or production-gate compatibility login without household access token.
+6. Replace base64-over-JSON attachments with `multipart/form-data`, hard file-size limits, and MIME allowlist.
+
+### Tier 2 - Fix Before Scaling Beyond A Few Households
+
+1. Introduce a versioned migration runner with `_migrations` tracking.
+2. Add immutable `audit_log` records for financial state transitions.
+3. Add orphaned attachment cleanup and cascade cleanup behavior.
+4. Move rate-limit state out of core SQLite tables:
+	- single-instance: in-memory store
+	- multi-instance: Redis-backed store
+5. Add idempotency support for payment creation to prevent duplicate charges on retries.
+
+### Tier 3 - Fix Before More Developers Join
+
+1. Add request/response schema validation for write endpoints (for example, with Zod).
+2. Introduce API versioning (`/api/v1`) with a deprecation path for unversioned routes.
+3. Split monolithic API tests into domain-focused test files plus shared helpers.
+4. Document and script PIN pepper rotation and forced PIN reset behavior.
+
+### Tier 4 - Fix Before Public Launch
+
+1. Add full dispute-resolution workflow transitions and audit logging.
+2. Replace temporary household ID format (`PT-{FRUIT}`) with higher-entropy short IDs.
+3. Expand health checks beyond liveness:
+	- DB read + writeability signal
+	- backup freshness
+	- disk pressure
+	- app version and uptime
+
+### Suggested Execution Order
+
+1. Implement migration runner first.
+2. Remove legacy decimal money fields and keep cents-only.
+3. Move tokens to httpOnly cookies.
+4. Add CSP and tighten security headers.
+5. Add schema validation on write endpoints.
+6. Remove compatibility login bypass in production.
+7. Migrate attachments to multipart uploads.
+8. Add audit log and write transition events.
+9. Refactor tests into modular suites and helpers.
+10. Add payment idempotency.
+11. Complete remaining Tier 3 and Tier 4 items.
+
+## Additional Confirmed Findings (April 2026)
+
+These are concrete issues confirmed in code review, separate from the 100-question stress list above.
+
+### Critical
+
+1. Registration can join the first existing household without invite code when `createHousehold` is false.
+2. Invite consumption is race-prone (check and consume are not atomic).
+
+### High
+
+1. Public user enumeration by `householdId` is possible via `GET /api/auth/users`.
+2. Household access endpoint (`POST /api/auth/household/access`) is not on the stricter auth limiter used for login/register.
+
+### Medium
+
+1. Role-management consistency gap: one role API guards against removing the last admin, another does not.
+2. Side effects on GET: recurring generation runs inside list endpoints (`GET /api/requests` and `GET /api/recurring`).
+3. Amount parsing is too permissive because `parseFloat` accepts malformed numeric prefixes (for example `10abc`).
+4. `reset-all` deletes attachment DB rows but does not remove files from disk.
+5. Global username uniqueness causes cross-household identity leakage and unnecessary tenancy coupling.
+
+## Follow-up Checklist
+
+- [x] Block no-invite household joining in production and require explicit household creation or valid invite.
+- [x] Make invite consumption atomic (single conditional update in transaction).
+- [x] Restrict `GET /api/auth/users` to invite-scoped access only, or require auth + household membership.
+- [x] Add dedicated rate limiting for `POST /api/auth/household/access`.
+- [x] Enforce last-admin protection across all role mutation endpoints.
+- [x] Remove write side effects from GET endpoints; move recurring generation to explicit job/command.
+- [x] Replace permissive money parsing with strict numeric validation.
+- [x] Ensure destructive reset also unlinks attachment files on disk.
+- [x] Revisit global-unique user name rule and scope uniqueness by household where appropriate.
+- [x] Remove legacy decimal money columns (`amount`) from requests/payments and persist only `*_cents`.
+- [x] Replace base64-over-JSON attachment upload with multipart/form-data plus MIME allowlist and file-size limits.
+
+## Adversarial Questions (1-100)
+
+Use these to pressure-test design, implementation, and operational assumptions.
 
 **Authentication & Sessions (1–12)**
 

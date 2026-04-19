@@ -12,6 +12,7 @@ process.env.JWT_SECRET = 'test-jwt-secret';
 process.env.PIN_PEPPER = 'test-pin-pepper-0123456789abcdef0123456789abcdef';
 process.env.DB_PATH = path.join(os.tmpdir(), `pockettab-test-${crypto.randomUUID()}.db`);
 process.env.ALLOW_DATA_RESET = 'false';
+process.env.DATA_RESET_SECRET = 'test-reset-secret';
 process.env.DISABLE_RATE_LIMIT = 'true';
 
 const app = require('../server/app');
@@ -314,12 +315,11 @@ test('family of 4 full advanced feature suite', async () => {
   const attachmentUpload = await request(app)
     .post('/api/attachments')
     .set(auth(family.teen.token))
-    .send({
-      refType: 'request',
-      refId: reqTeenToMom.body.id,
-      fileName: 'proof.txt',
-      mimeType: 'text/plain',
-      dataBase64: Buffer.from('proof-of-payment').toString('base64')
+    .field('refType', 'request')
+    .field('refId', reqTeenToMom.body.id)
+    .attach('file', Buffer.from('proof-of-payment'), {
+      filename: 'proof.txt',
+      contentType: 'text/plain'
     });
   assert.equal(attachmentUpload.status, 201);
 
@@ -410,38 +410,61 @@ test('family of 4 full advanced feature suite', async () => {
     .set(auth(family.mom.token));
   assert.equal(revokeMomSession.status, 200);
 
+  const momRelogin = await loginUser(family.mom.user.id, '1111');
+
   // Reset-all role + env gate.
   process.env.ALLOW_DATA_RESET = 'false';
   const resetDenied = await request(app)
     .delete('/api/users/reset-all')
     .set(auth(family.dad.token))
-    .send({ confirmation: 'RESET EVERYTHING' });
+    .send({ confirmation: 'RESET EVERYTHING', resetSecret: process.env.DATA_RESET_SECRET });
   assert.equal(resetDenied.status, 403);
 
   process.env.ALLOW_DATA_RESET = 'true';
-  const resetBadConfirm = await request(app)
+  const resetNonAdminDenied = await request(app)
     .delete('/api/users/reset-all')
     .set(auth(family.dad.token))
-    .send({ confirmation: 'NOPE' });
+    .send({ confirmation: 'RESET EVERYTHING', resetSecret: process.env.DATA_RESET_SECRET });
+  assert.equal(resetNonAdminDenied.status, 403);
+
+  const resetBadSecret = await request(app)
+    .delete('/api/users/reset-all')
+    .set(auth(momRelogin.token))
+    .send({ confirmation: 'RESET EVERYTHING', resetSecret: 'wrong-secret' });
+  assert.equal(resetBadSecret.status, 403);
+
+  const resetBadConfirm = await request(app)
+    .delete('/api/users/reset-all')
+    .set(auth(momRelogin.token))
+    .send({ confirmation: 'NOPE', resetSecret: process.env.DATA_RESET_SECRET });
   assert.equal(resetBadConfirm.status, 400);
 
   const resetOk = await request(app)
     .delete('/api/users/reset-all')
-    .set(auth(family.dad.token))
-    .send({ confirmation: 'RESET EVERYTHING' });
+    .set(auth(momRelogin.token))
+    .send({ confirmation: 'RESET EVERYTHING', resetSecret: process.env.DATA_RESET_SECRET });
   assert.equal(resetOk.status, 200);
 
-  const usersAfterReset = await request(app)
-    .get(`/api/auth/users?householdId=${family.mom.user.household_id}`);
-  assert.equal(usersAfterReset.status, 200);
-  assert.equal(usersAfterReset.body.length, 0);
+  const profileAfterReset = await request(app)
+    .get('/api/users/me')
+    .set(auth(momRelogin.token));
+  assert.equal(profileAfterReset.status, 403);
 
   process.env.ALLOW_DATA_RESET = 'false';
 });
 
 test('multi-family isolation with household invites', async () => {
   const suffix = uniqueSuffix();
-  const familyAAdmin = await registerUser(`FamilyA-Admin-${suffix}`, '1111');
+  const familyAAdminRes = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `FamilyA-Admin-${suffix}`,
+      pin: '1111',
+      createHousehold: true,
+      householdName: `Family A ${suffix}`
+    });
+  assert.equal(familyAAdminRes.status, 201);
+  const familyAAdmin = familyAAdminRes.body;
 
   const createInviteRes = await request(app)
     .post('/api/auth/household/invites')
@@ -714,12 +737,11 @@ test('ten-family randomized multi-device resilience regression', async () => {
     const attachment = await request(app)
       .post('/api/attachments')
       .set(auth(child.tokens[0]))
-      .send({
-        refType: 'request',
-        refId: requestCreated.body.id,
-        fileName: `${family.name}.txt`,
-        mimeType: 'text/plain',
-        dataBase64: Buffer.from(`proof-${family.name}`).toString('base64')
+      .field('refType', 'request')
+      .field('refId', requestCreated.body.id)
+      .attach('file', Buffer.from(`proof-${family.name}`), {
+        filename: `${family.name}.txt`,
+        contentType: 'text/plain'
       });
     assert.equal(attachment.status, 201);
 
@@ -1026,12 +1048,11 @@ test('cross-household probes return 404 for protected resources', async () => {
   const attachmentA = await request(app)
     .post('/api/attachments')
     .set(auth(familyAAdmin.body.token))
-    .send({
-      refType: 'request',
-      refId: reqA.body.id,
-      fileName: 'probe.txt',
-      mimeType: 'text/plain',
-      dataBase64: Buffer.from('probe-data').toString('base64')
+    .field('refType', 'request')
+    .field('refId', reqA.body.id)
+    .attach('file', Buffer.from('probe-data'), {
+      filename: 'probe.txt',
+      contentType: 'text/plain'
     });
   assert.equal(attachmentA.status, 201);
 
@@ -1336,24 +1357,22 @@ test('attachment payload boundaries enforce clear UX-safe errors', async () => {
     const exactBoundaryUpload = await request(app)
       .post('/api/attachments')
       .set(auth(sender.token))
-      .send({
-        refType: 'request',
-        refId: requestRes.body.id,
-        fileName: 'exact.bin',
-        mimeType: 'application/octet-stream',
-        dataBase64: Buffer.from('1234567890ABCDEF').toString('base64')
+      .field('refType', 'request')
+      .field('refId', requestRes.body.id)
+      .attach('file', Buffer.from('1234567890ABCDEF'), {
+        filename: 'exact.bin',
+        contentType: 'application/octet-stream'
       });
     assert.equal(exactBoundaryUpload.status, 201);
 
     const tooLargeUpload = await request(app)
       .post('/api/attachments')
       .set(auth(sender.token))
-      .send({
-        refType: 'request',
-        refId: requestRes.body.id,
-        fileName: 'oversize.bin',
-        mimeType: 'application/octet-stream',
-        dataBase64: Buffer.from('1234567890ABCDEFG').toString('base64')
+      .field('refType', 'request')
+      .field('refId', requestRes.body.id)
+      .attach('file', Buffer.from('1234567890ABCDEFG'), {
+        filename: 'oversize.bin',
+        contentType: 'application/octet-stream'
       });
     assert.equal(tooLargeUpload.status, 400);
     assert.match(tooLargeUpload.body.error, /exceeds max size/i);
@@ -1361,15 +1380,26 @@ test('attachment payload boundaries enforce clear UX-safe errors', async () => {
     const emptyPayloadUpload = await request(app)
       .post('/api/attachments')
       .set(auth(sender.token))
-      .send({
-        refType: 'request',
-        refId: requestRes.body.id,
-        fileName: 'empty.bin',
-        mimeType: 'application/octet-stream',
-        dataBase64: 'data:application/octet-stream;base64,'
+      .field('refType', 'request')
+      .field('refId', requestRes.body.id)
+      .attach('file', Buffer.alloc(0), {
+        filename: 'empty.bin',
+        contentType: 'application/octet-stream'
       });
     assert.equal(emptyPayloadUpload.status, 400);
     assert.match(emptyPayloadUpload.body.error, /payload is empty/i);
+
+    const disallowedMimeUpload = await request(app)
+      .post('/api/attachments')
+      .set(auth(sender.token))
+      .field('refType', 'request')
+      .field('refId', requestRes.body.id)
+      .attach('file', Buffer.from('unsafe-binary'), {
+        filename: 'payload.exe',
+        contentType: 'application/x-msdownload'
+      });
+    assert.equal(disallowedMimeUpload.status, 400);
+    assert.match(disallowedMimeUpload.body.error, /mime type is not allowed/i);
   } finally {
     if (typeof previousMaxAttachmentBytes === 'undefined') {
       delete process.env.MAX_ATTACHMENT_BYTES;
@@ -1379,30 +1409,210 @@ test('attachment payload boundaries enforce clear UX-safe errors', async () => {
   }
 });
 
-test('name normalization blocks invisible duplicate profiles', async () => {
+test('name normalization enforces uniqueness within a household only', async () => {
   const suffix = uniqueSuffix();
 
-  const trimmedBase = await request(app)
+  const householdAAdmin = await request(app)
     .post('/api/auth/register')
-    .send({ name: `  Invisible-${suffix}  `, pin: '9090' });
-  assert.equal(trimmedBase.status, 201);
+    .send({
+      name: `  Invisible-${suffix}  `,
+      pin: '9090',
+      createHousehold: true,
+      householdName: `Invisible Household A ${suffix}`
+    });
+  assert.equal(householdAAdmin.status, 201);
+
+  const sameNameDifferentHousehold = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `invisible-${suffix}`,
+      pin: '9191',
+      createHousehold: true,
+      householdName: `Invisible Household B ${suffix}`
+    });
+  assert.equal(sameNameDifferentHousehold.status, 201);
+  assert.notEqual(sameNameDifferentHousehold.body.user.household_id, householdAAdmin.body.user.household_id);
+
+  const inviteForCaseVariant = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(householdAAdmin.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(inviteForCaseVariant.status, 201);
 
   const caseVariant = await request(app)
     .post('/api/auth/register')
-    .send({ name: `invisible-${suffix}`, pin: '9191' });
+    .send({ name: `invisible-${suffix}`, pin: '9292', inviteCode: inviteForCaseVariant.body.code });
   assert.equal(caseVariant.status, 400);
   assert.match(caseVariant.body.error, /already taken/i);
 
+  const inviteForLongNameOne = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(householdAAdmin.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(inviteForLongNameOne.status, 201);
+
   const firstLong = await request(app)
     .post('/api/auth/register')
-    .send({ name: `abcdefghijklmnopqrst-${suffix}-A`, pin: '9292' });
+    .send({ name: `abcdefghijklmnopqrst-${suffix}-A`, pin: '9393', inviteCode: inviteForLongNameOne.body.code });
   assert.equal(firstLong.status, 201);
+
+  const inviteForLongNameTwo = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(householdAAdmin.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(inviteForLongNameTwo.status, 201);
 
   const secondLongCollision = await request(app)
     .post('/api/auth/register')
-    .send({ name: `abcdefghijklmnopqrst-${suffix}-B`, pin: '9393' });
+    .send({ name: `abcdefghijklmnopqrst-${suffix}-B`, pin: '9494', inviteCode: inviteForLongNameTwo.body.code });
   assert.equal(secondLongCollision.status, 400);
   assert.match(secondLongCollision.body.error, /already taken/i);
+});
+
+test('amount parsing rejects malformed and over-precision values', async () => {
+  const suffix = uniqueSuffix();
+
+  const adminRes = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `AmountAdmin-${suffix}`,
+      pin: '1111',
+      createHousehold: true,
+      householdName: `Amount Household ${suffix}`
+    });
+  assert.equal(adminRes.status, 201);
+
+  const inviteRes = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(adminRes.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(inviteRes.status, 201);
+
+  const memberRes = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `AmountMember-${suffix}`, pin: '2222', inviteCode: inviteRes.body.code });
+  assert.equal(memberRes.status, 201);
+
+  const invalidRequestPrefix = await request(app)
+    .post('/api/requests')
+    .set(auth(adminRes.body.token))
+    .send({ toId: memberRes.body.user.id, amount: '10abc', reason: 'invalid prefix' });
+  assert.equal(invalidRequestPrefix.status, 400);
+
+  const invalidRequestPrecision = await request(app)
+    .post('/api/requests')
+    .set(auth(adminRes.body.token))
+    .send({ toId: memberRes.body.user.id, amount: '10.999', reason: 'invalid precision' });
+  assert.equal(invalidRequestPrecision.status, 400);
+
+  const validRequest = await request(app)
+    .post('/api/requests')
+    .set(auth(adminRes.body.token))
+    .send({ toId: memberRes.body.user.id, amount: '10.50', reason: 'valid amount' });
+  assert.equal(validRequest.status, 201);
+
+  const acceptValidRequest = await request(app)
+    .patch(`/api/requests/${validRequest.body.id}`)
+    .set(auth(memberRes.body.token))
+    .send({ status: 'accepted' });
+  assert.equal(acceptValidRequest.status, 200);
+
+  const invalidPaymentPrefix = await request(app)
+    .post('/api/payments')
+    .set(auth(memberRes.body.token))
+    .send({ toId: adminRes.body.user.id, amount: '5xyz', message: 'bad amount' });
+  assert.equal(invalidPaymentPrefix.status, 400);
+
+  const invalidRecurringPrecision = await request(app)
+    .post('/api/recurring')
+    .set(auth(adminRes.body.token))
+    .send({
+      fromId: adminRes.body.user.id,
+      toId: memberRes.body.user.id,
+      amount: '7.001',
+      frequency: 'weekly',
+      reason: 'bad recurring amount'
+    });
+  assert.equal(invalidRecurringPrecision.status, 400);
+});
+
+test('money tables persist cents-only schema', () => {
+  const requestColumns = db.prepare('PRAGMA table_info(requests)').all().map((col) => col.name);
+  assert.ok(requestColumns.includes('amount_cents'));
+  assert.equal(requestColumns.includes('amount'), false);
+
+  const paymentColumns = db.prepare('PRAGMA table_info(payments)').all().map((col) => col.name);
+  assert.ok(paymentColumns.includes('amount_cents'));
+  assert.equal(paymentColumns.includes('amount'), false);
+});
+
+test('GET endpoints do not generate recurring requests', async () => {
+  const suffix = uniqueSuffix();
+
+  const adminRes = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `RecurringAdmin-${suffix}`,
+      pin: '1111',
+      createHousehold: true,
+      householdName: `Recurring Household ${suffix}`
+    });
+  assert.equal(adminRes.status, 201);
+
+  const inviteRes = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(adminRes.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(inviteRes.status, 201);
+
+  const memberRes = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `RecurringMember-${suffix}`, pin: '2222', inviteCode: inviteRes.body.code });
+  assert.equal(memberRes.status, 201);
+
+  const recurringCreate = await request(app)
+    .post('/api/recurring')
+    .set(auth(adminRes.body.token))
+    .send({
+      fromId: adminRes.body.user.id,
+      toId: memberRes.body.user.id,
+      amount: 12,
+      reason: 'No side effect check',
+      frequency: 'weekly',
+      nextRunAt: '2000-01-01T00:00:00.000Z'
+    });
+  assert.equal(recurringCreate.status, 201);
+
+  const requestsBefore = await request(app)
+    .get('/api/requests')
+    .set(auth(memberRes.body.token));
+  assert.equal(requestsBefore.status, 200);
+  assert.equal(requestsBefore.body.length, 0);
+
+  const recurringList = await request(app)
+    .get('/api/recurring')
+    .set(auth(adminRes.body.token));
+  assert.equal(recurringList.status, 200);
+  assert.ok(recurringList.body.some((rr) => rr.id === recurringCreate.body.id));
+
+  const requestsAfterGet = await request(app)
+    .get('/api/requests')
+    .set(auth(memberRes.body.token));
+  assert.equal(requestsAfterGet.status, 200);
+  assert.equal(requestsAfterGet.body.length, 0);
+
+  const recurringRun = await request(app)
+    .post('/api/recurring/run')
+    .set(auth(adminRes.body.token))
+    .send({ limit: 10 });
+  assert.equal(recurringRun.status, 200);
+  assert.ok(recurringRun.body.generated >= 1);
+
+  const requestsAfterRun = await request(app)
+    .get('/api/requests')
+    .set(auth(memberRes.body.token));
+  assert.equal(requestsAfterRun.status, 200);
+  assert.ok(requestsAfterRun.body.some((reqRow) => reqRow.recurring_id === recurringCreate.body.id));
 });
 
 test('everyday five-person family flow uses all major features', async () => {
@@ -1449,7 +1659,8 @@ test('everyday five-person family flow uses all major features', async () => {
   assert.equal(householdRes.body.memberCount, 5);
 
   const householdUsers = await request(app)
-    .get(`/api/auth/users?householdId=${adminRes.body.user.household_id}`);
+    .get('/api/auth/household/members')
+    .set(auth(adminRes.body.token));
   assert.equal(householdUsers.status, 200);
   assert.equal(householdUsers.body.length, 5);
 
@@ -1548,12 +1759,11 @@ test('everyday five-person family flow uses all major features', async () => {
   const attachmentUpload = await request(app)
     .post('/api/attachments')
     .set(auth(childBudgeted.token))
-    .send({
-      refType: 'request',
-      refId: groceryRequest.body.id,
-      fileName: 'receipt.txt',
-      mimeType: 'text/plain',
-      dataBase64: Buffer.from('receipt-line-1\nreceipt-line-2').toString('base64')
+    .field('refType', 'request')
+    .field('refId', groceryRequest.body.id)
+    .attach('file', Buffer.from('receipt-line-1\nreceipt-line-2'), {
+      filename: 'receipt.txt',
+      contentType: 'text/plain'
     });
   assert.equal(attachmentUpload.status, 201);
 
@@ -1877,8 +2087,111 @@ test('household access endpoint gates member login to the resolved household', a
   assert.equal(outsiderLoginDenied.status, 404);
 });
 
-test('auth users endpoint requires inviteCode or householdId scope', async () => {
+test('auth users endpoint requires inviteCode scope', async () => {
   const res = await request(app).get('/api/auth/users');
   assert.equal(res.status, 400);
-  assert.match(res.body.error, /inviteCode|householdId/i);
+  assert.match(res.body.error, /inviteCode/i);
+
+  const householdIdQuery = await request(app).get('/api/auth/users?householdId=default-household');
+  assert.equal(householdIdQuery.status, 400);
+  assert.match(householdIdQuery.body.error, /inviteCode/i);
+});
+
+test('session cookies are issued on register/login and support cookie-based auth', async () => {
+  const suffix = uniqueSuffix();
+  const agent = request.agent(app);
+
+  const registration = await agent
+    .post('/api/auth/register')
+    .send({
+      name: `CookieSession-${suffix}`,
+      pin: '1122',
+      createHousehold: true,
+      householdName: `Cookie Household ${suffix}`
+    });
+  assert.equal(registration.status, 201);
+
+  const registerCookies = registration.headers['set-cookie'] || [];
+  assert.ok(registerCookies.some((value) => value.startsWith('pt_session=')));
+  assert.ok(registerCookies.some((value) => /HttpOnly/i.test(value)));
+  assert.ok(registerCookies.some((value) => /SameSite=Strict/i.test(value)));
+
+  const meFromCookie = await agent.get('/api/users/me');
+  assert.equal(meFromCookie.status, 200);
+  assert.equal(meFromCookie.body.id, registration.body.user.id);
+
+  const login = await request(app)
+    .post('/api/auth/login')
+    .send({ userId: registration.body.user.id, pin: '1122' });
+  assert.equal(login.status, 200);
+
+  const loginCookies = login.headers['set-cookie'] || [];
+  assert.ok(loginCookies.some((value) => value.startsWith('pt_session=')));
+
+  const logout = await agent.post('/api/auth/logout');
+  assert.equal(logout.status, 200);
+
+  const meAfterLogout = await agent.get('/api/users/me');
+  assert.equal(meAfterLogout.status, 401);
+});
+
+test('production mode blocks implicit household join and requires household access token for login', async () => {
+  const isolatedDbPath = path.join(os.tmpdir(), `pockettab-prod-auth-${crypto.randomUUID()}.db`);
+  const isolated = loadIsolatedApp({
+    NODE_ENV: 'production',
+    JWT_SECRET: 'prod-test-jwt-secret',
+    PIN_PEPPER: process.env.PIN_PEPPER,
+    DB_PATH: isolatedDbPath,
+    DISABLE_RATE_LIMIT: 'true',
+    ALLOW_DATA_RESET: 'false',
+    DATA_RESET_SECRET: process.env.DATA_RESET_SECRET
+  });
+
+  try {
+    const suffix = uniqueSuffix();
+
+    const implicitJoin = await request(isolated.app)
+      .post('/api/auth/register')
+      .send({ name: `ProdImplicit-${suffix}`, pin: '1111' });
+    assert.equal(implicitJoin.status, 400);
+    assert.match(implicitJoin.body.error, /inviteCode|createHousehold/i);
+
+    const admin = await request(isolated.app)
+      .post('/api/auth/register')
+      .send({
+        name: `ProdAdmin-${suffix}`,
+        pin: '2222',
+        createHousehold: true,
+        householdName: `Prod Household ${suffix}`
+      });
+    assert.equal(admin.status, 201);
+
+    const loginWithoutHouseholdAccess = await request(isolated.app)
+      .post('/api/auth/login')
+      .send({ userId: admin.body.user.id, pin: '2222' });
+    assert.equal(loginWithoutHouseholdAccess.status, 400);
+    assert.match(loginWithoutHouseholdAccess.body.error, /household access token/i);
+
+    const householdAccess = await request(isolated.app)
+      .post('/api/auth/household/access')
+      .send({
+        householdLoginId: admin.body.householdAuth.householdLoginId,
+        householdCode: admin.body.householdAuth.householdCode
+      });
+    assert.equal(householdAccess.status, 200);
+
+    const loginWithHouseholdAccess = await request(isolated.app)
+      .post('/api/auth/login')
+      .send({
+        userId: admin.body.user.id,
+        pin: '2222',
+        householdAccessToken: householdAccess.body.accessToken
+      });
+    assert.equal(loginWithHouseholdAccess.status, 200);
+  } finally {
+    isolated.cleanup();
+    if (fs.existsSync(isolatedDbPath)) fs.unlinkSync(isolatedDbPath);
+    if (fs.existsSync(`${isolatedDbPath}-wal`)) fs.unlinkSync(`${isolatedDbPath}-wal`);
+    if (fs.existsSync(`${isolatedDbPath}-shm`)) fs.unlinkSync(`${isolatedDbPath}-shm`);
+  }
 });

@@ -107,16 +107,29 @@ function consumeInvite(code, userId) {
     return { error: 'Invalid invite code' };
   }
 
-  if (invite.used_at) {
-    return { error: 'Invite code already used' };
-  }
+  const consumedAt = new Date().toISOString();
+  const consumeResult = db.prepare(
+    `UPDATE household_invites
+     SET used_at = ?, used_by = ?
+     WHERE id = ? AND used_at IS NULL AND expires_at > ?`
+  ).run(consumedAt, userId, invite.id, consumedAt);
 
-  if (new Date(invite.expires_at).getTime() <= Date.now()) {
-    return { error: 'Invite code expired' };
-  }
+  if (consumeResult.changes !== 1) {
+    const current = db.prepare('SELECT used_at, expires_at FROM household_invites WHERE id = ?').get(invite.id);
+    if (!current) {
+      return { error: 'Invalid invite code' };
+    }
 
-  db.prepare('UPDATE household_invites SET used_at = ?, used_by = ? WHERE id = ?')
-    .run(new Date().toISOString(), userId, invite.id);
+    if (current.used_at) {
+      return { error: 'Invite code already used' };
+    }
+
+    if (new Date(current.expires_at).getTime() <= Date.now()) {
+      return { error: 'Invite code expired' };
+    }
+
+    return { error: 'Invite code could not be consumed' };
+  }
 
   return { householdId: invite.household_id };
 }

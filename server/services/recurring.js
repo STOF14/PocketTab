@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const db = require('../db');
 const { createNotification } = require('./notifications');
-const { centsToAmount, nowIso } = require('./utils');
+const { nowIso } = require('./utils');
 
 function nextRunAt(currentIso, frequency) {
   const d = new Date(currentIso);
@@ -37,7 +37,7 @@ function processDueRecurringRequests(limit = 25, householdId = null) {
   }
 
   const insertRequest = db.prepare(
-    'INSERT INTO requests (id, from_id, to_id, amount, amount_cents, reason, category, tags_json, recurring_id, settled_cents, requires_approval, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)'
+    'INSERT INTO requests (id, from_id, to_id, amount_cents, reason, category, tags_json, recurring_id, settled_cents, requires_approval, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)'
   );
 
   const updateRecurring = db.prepare(
@@ -56,7 +56,6 @@ function processDueRecurringRequests(limit = 25, householdId = null) {
         requestId,
         item.from_id,
         item.to_id,
-        centsToAmount(item.amount_cents),
         item.amount_cents,
         reason,
         item.category || null,

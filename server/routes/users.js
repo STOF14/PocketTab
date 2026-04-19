@@ -1,9 +1,12 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const db = require('../db');
 const {
   authenticateToken,
   requireParentOrAdmin,
   requireRoles,
+  clearSessionCookie,
   revokeAllSessionsForUser,
   revokeSession
 } = require('../middleware/auth');
@@ -17,6 +20,33 @@ router.use(authenticateToken);
 
 const VALID_ROLES = new Set(['admin', 'parent', 'child']);
 const MAX_HOUSEHOLD_RESET_USERS = 5000;
+const attachmentsDir = process.env.ATTACHMENTS_DIR || path.join(__dirname, '..', '..', 'uploads', 'attachments');
+
+function safeSecretMatch(provided, expected) {
+  if (typeof provided !== 'string' || typeof expected !== 'string') {
+    return false;
+  }
+
+  const providedBuf = Buffer.from(provided);
+  const expectedBuf = Buffer.from(expected);
+  if (providedBuf.length !== expectedBuf.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(providedBuf, expectedBuf);
+}
+
+function logResetAudit(req, payload) {
+  console.warn(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: 'warn',
+    type: 'household_data_reset',
+    requestId: req.requestId || null,
+    actorUserId: req.userId,
+    householdId: req.householdId,
+    ...payload
+  }));
+}
 
 // GET /api/users/me — current authenticated profile
 router.get('/me', (req, res) => {
@@ -55,6 +85,14 @@ router.patch('/:id/role', requireRoles(['admin']), (req, res) => {
     return res.status(403).json({ error: 'Cannot update role for user outside your household' });
   }
 
+  if (user.role === 'admin' && role !== 'admin') {
+    const adminCount = db.prepare('SELECT COUNT(*) as total FROM users WHERE household_id = ? AND role = ?')
+      .get(req.householdId, 'admin').total;
+    if (adminCount <= 1) {
+      return res.status(400).json({ error: 'At least one admin is required per household' });
+    }
+  }
+
   db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, req.params.id);
 
   return res.json({
@@ -91,6 +129,7 @@ router.patch('/pin', (req, res) => {
     'UPDATE users SET pin_hash = ?, pin_hash_needs_rehash = 0, failed_login_attempts = 0, locked_until = NULL WHERE id = ?'
   ).run(newHash, req.userId);
   revokeAllSessionsForUser(req.userId);
+  clearSessionCookie(res);
 
   res.json({
     message: 'PIN updated successfully. Session revoked for security.',
@@ -210,12 +249,25 @@ router.delete('/sessions/:id', (req, res) => {
 });
 
 // DELETE /api/users/reset-all — Reset all app data (explicitly enabled only)
-router.delete('/reset-all', requireParentOrAdmin, (req, res) => {
+router.delete('/reset-all', requireRoles(['admin']), (req, res) => {
   if (process.env.ALLOW_DATA_RESET !== 'true') {
     return res.status(403).json({ error: 'Data reset is disabled on this server' });
   }
 
-  const { confirmation } = req.body || {};
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DATA_RESET_HTTP !== 'true') {
+    return res.status(403).json({ error: 'HTTP data reset is disabled in production. Use CLI tooling.' });
+  }
+
+  const { confirmation, resetSecret } = req.body || {};
+  const configuredResetSecret = process.env.DATA_RESET_SECRET;
+  if (!configuredResetSecret) {
+    return res.status(403).json({ error: 'Data reset secret is not configured on this server' });
+  }
+
+  if (!safeSecretMatch(resetSecret, configuredResetSecret)) {
+    return res.status(403).json({ error: 'Invalid reset secret' });
+  }
+
   if (confirmation !== 'RESET EVERYTHING') {
     return res.status(400).json({ error: 'Invalid reset confirmation text' });
   }
@@ -228,6 +280,13 @@ router.delete('/reset-all', requireParentOrAdmin, (req, res) => {
     return res.status(400).json({ error: `Household reset limit exceeded (${MAX_HOUSEHOLD_RESET_USERS} users)` });
   }
   const placeholders = householdUserIds.map(() => '?').join(', ');
+  const attachmentRows = db.prepare(`SELECT id, file_path FROM attachments WHERE user_id IN (${placeholders})`).all(...householdUserIds);
+
+  logResetAudit(req, {
+    action: 'attempt',
+    userCount: householdUserIds.length,
+    attachmentCount: attachmentRows.length
+  });
 
   const wipeAll = db.transaction(() => {
     db.prepare('DELETE FROM household_invites WHERE household_id = ?').run(req.householdId);
@@ -249,7 +308,51 @@ router.delete('/reset-all', requireParentOrAdmin, (req, res) => {
   });
 
   wipeAll();
-  res.json({ message: 'All data has been reset' });
+
+  let filesRemoved = 0;
+  for (const attachment of attachmentRows) {
+    const candidatePath = attachment.file_path;
+    if (typeof candidatePath !== 'string' || candidatePath.trim() === '') {
+      continue;
+    }
+
+    const resolvedAttachmentPath = path.resolve(candidatePath);
+    const resolvedAttachmentsDir = path.resolve(attachmentsDir);
+    const isWithinAttachmentsDir = resolvedAttachmentPath === resolvedAttachmentsDir
+      || resolvedAttachmentPath.startsWith(`${resolvedAttachmentsDir}${path.sep}`);
+    if (!isWithinAttachmentsDir) {
+      continue;
+    }
+
+    if (!fs.existsSync(resolvedAttachmentPath)) {
+      continue;
+    }
+
+    try {
+      fs.unlinkSync(resolvedAttachmentPath);
+      filesRemoved += 1;
+    } catch (err) {
+      console.warn(JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'warn',
+        type: 'attachment_unlink_failed',
+        requestId: req.requestId || null,
+        attachmentId: attachment.id,
+        path: resolvedAttachmentPath,
+        message: err.message
+      }));
+    }
+  }
+
+  clearSessionCookie(res);
+  logResetAudit(req, {
+    action: 'success',
+    userCount: householdUserIds.length,
+    attachmentCount: attachmentRows.length,
+    filesRemoved
+  });
+
+  res.json({ message: 'All data has been reset', usersRemoved: householdUserIds.length, filesRemoved });
 });
 
 module.exports = router;

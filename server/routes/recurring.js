@@ -25,8 +25,6 @@ function shapeRecurring(row) {
 
 // GET /api/recurring — list recurring rules
 router.get('/', (req, res) => {
-  processDueRecurringRequests(25, req.householdId);
-
   const paging = parsePaging(req.query);
   if (paging.error) {
     return res.status(400).json({ error: paging.error });

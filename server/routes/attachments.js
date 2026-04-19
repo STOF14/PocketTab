@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const multer = require('multer');
 const db = require('../db');
 const { authenticateToken } = require('../middleware/auth');
 const { parsePaging, nowIso } = require('../services/utils');
@@ -17,14 +18,68 @@ function notFound(res) {
 const attachmentsDir = process.env.ATTACHMENTS_DIR || path.join(__dirname, '..', '..', 'uploads', 'attachments');
 fs.mkdirSync(attachmentsDir, { recursive: true });
 
+const DEFAULT_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const DEFAULT_ALLOWED_ATTACHMENT_MIME_TYPES = Object.freeze([
+  'application/pdf',
+  'application/octet-stream',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'text/plain'
+]);
+
+function getMaxAttachmentBytes() {
+  const configured = Number.parseInt(process.env.MAX_ATTACHMENT_BYTES || String(DEFAULT_MAX_ATTACHMENT_BYTES), 10);
+  return Number.isInteger(configured) && configured > 0 ? configured : DEFAULT_MAX_ATTACHMENT_BYTES;
+}
+
+function getAllowedAttachmentMimeTypes() {
+  const raw = String(process.env.ALLOWED_ATTACHMENT_MIME_TYPES || '').trim();
+  const values = raw
+    ? raw.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean)
+    : DEFAULT_ALLOWED_ATTACHMENT_MIME_TYPES;
+  return new Set(values);
+}
+
+function parseMultipartAttachment(req, res, next) {
+  const maxBytes = getMaxAttachmentBytes();
+  const allowedMimeTypes = getAllowedAttachmentMimeTypes();
+
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+      files: 1,
+      // Permit exact-boundary payloads and enforce the real cutoff after parse.
+      fileSize: maxBytes + 1
+    },
+    fileFilter: (_req, file, cb) => {
+      const normalizedMime = String(file.mimetype || '').toLowerCase();
+      if (!allowedMimeTypes.has(normalizedMime)) {
+        return cb(new Error('Attachment MIME type is not allowed'));
+      }
+      return cb(null, true);
+    }
+  }).single('file');
+
+  upload(req, res, (err) => {
+    if (!err) {
+      return next();
+    }
+
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: `Attachment exceeds max size of ${maxBytes} bytes` });
+      }
+      return res.status(400).json({ error: 'Invalid multipart attachment payload' });
+    }
+
+    return res.status(400).json({ error: err.message || 'Invalid multipart attachment payload' });
+  });
+}
+
 function sanitizeFilename(name) {
   const safe = String(name || 'attachment.bin').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
   return safe || 'attachment.bin';
-}
-
-function decodeBase64Data(dataBase64) {
-  const cleaned = String(dataBase64 || '').replace(/^data:[^;]+;base64,/, '');
-  return Buffer.from(cleaned, 'base64');
 }
 
 // GET /api/attachments?refType=request&refId=... — list attachments for a reference
@@ -69,12 +124,12 @@ router.get('/', (req, res) => {
   return res.json(rows);
 });
 
-// POST /api/attachments — upload metadata + base64 data payload
-router.post('/', (req, res) => {
-  const { refType, refId, fileName, mimeType, dataBase64 } = req.body || {};
+// POST /api/attachments — upload multipart attachment payload
+router.post('/', parseMultipartAttachment, (req, res) => {
+  const { refType, refId } = req.body || {};
 
-  if (!refType || !refId || !fileName || !mimeType || !dataBase64) {
-    return res.status(400).json({ error: 'refType, refId, fileName, mimeType, and dataBase64 are required' });
+  if (!refType || !refId) {
+    return res.status(400).json({ error: 'refType and refId are required' });
   }
 
   if (!['request', 'payment', 'message'].includes(refType)) {
@@ -90,18 +145,22 @@ router.post('/', (req, res) => {
     return notFound(res);
   }
 
-  const buffer = decodeBase64Data(dataBase64);
+  if (!req.file) {
+    return res.status(400).json({ error: 'Attachment file is required (multipart field "file")' });
+  }
+
+  const buffer = req.file.buffer;
   if (!buffer || buffer.length === 0) {
     return res.status(400).json({ error: 'Attachment payload is empty' });
   }
 
-  const maxBytes = Number.parseInt(process.env.MAX_ATTACHMENT_BYTES || String(5 * 1024 * 1024), 10);
+  const maxBytes = getMaxAttachmentBytes();
   if (buffer.length > maxBytes) {
     return res.status(400).json({ error: `Attachment exceeds max size of ${maxBytes} bytes` });
   }
 
   const id = crypto.randomUUID();
-  const safeName = sanitizeFilename(fileName);
+  const safeName = sanitizeFilename(req.file.originalname);
   const ext = path.extname(safeName) || '.bin';
   const storedName = `${id}${ext}`;
   const storedPath = path.join(attachmentsDir, storedName);
@@ -112,7 +171,7 @@ router.post('/', (req, res) => {
     `INSERT INTO attachments
       (id, ref_type, ref_id, user_id, file_path, original_name, mime_type, size_bytes, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, refType, refId, req.userId, storedPath, safeName, String(mimeType).slice(0, 120), buffer.length, createdAt);
+  ).run(id, refType, refId, req.userId, storedPath, safeName, String(req.file.mimetype || '').slice(0, 120), buffer.length, createdAt);
 
   const row = db.prepare('SELECT * FROM attachments WHERE id = ?').get(id);
   return res.status(201).json(row);

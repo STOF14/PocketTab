@@ -45,6 +45,7 @@ const config = {
     enabled: !(process.env.NODE_ENV === 'test' || process.env.DISABLE_RATE_LIMIT === 'true'),
     globalMax: parsePositiveInt(process.env.GLOBAL_RATE_LIMIT_MAX, isProduction ? 300 : 100),
     authMax: parsePositiveInt(process.env.AUTH_RATE_LIMIT_MAX, isProduction ? 30 : 10),
+    householdAccessMax: parsePositiveInt(process.env.HOUSEHOLD_ACCESS_RATE_LIMIT_MAX, isProduction ? 20 : 10),
     windowMs: parsePositiveInt(process.env.RATE_LIMIT_WINDOW_MS, 60 * 1000)
   },
   trustProxy: parseTrustProxy(process.env.TRUST_PROXY),

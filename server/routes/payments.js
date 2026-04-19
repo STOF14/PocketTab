@@ -186,8 +186,8 @@ router.post('/', requireSameHousehold((req) => req.body?.toId), (req, res) => {
 
   const insertPayment = db.prepare(
     `INSERT INTO payments
-      (id, from_id, to_id, request_id, amount, amount_cents, message, category, tags_json, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?)`
+      (id, from_id, to_id, request_id, amount_cents, message, category, tags_json, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?)`
   );
 
   const insertMessage = db.prepare(
@@ -200,7 +200,6 @@ router.post('/', requireSameHousehold((req) => req.body?.toId), (req, res) => {
       req.userId,
       recipientId,
       requestId || null,
-      Number((amountCents / 100).toFixed(2)),
       amountCents,
       safeMessage,
       safeCategory,

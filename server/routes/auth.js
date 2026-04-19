@@ -1,10 +1,13 @@
 const express = require('express');
 const db = require('../db');
+const config = require('../config');
 const {
   authenticateToken,
   issueSessionToken,
   issueHouseholdAccessToken,
   verifyHouseholdAccessToken,
+  setSessionCookie,
+  clearSessionCookie,
   revokeSession,
   requireRole,
   HOUSEHOLD_ACCESS_TTL_MINUTES
@@ -24,6 +27,9 @@ const { isValidHouseholdCode, normalizeHouseholdLoginId } = require('../services
 const router = express.Router();
 const MAX_LOGIN_ATTEMPTS = Number.parseInt(process.env.PIN_MAX_ATTEMPTS || '5', 10);
 const LOCK_MINUTES = Number.parseInt(process.env.PIN_LOCK_MINUTES || '15', 10);
+const requireExplicitHouseholdFlow = config.isProduction;
+const allowLegacyLoginWithoutHouseholdAccess =
+  process.env.ALLOW_LEGACY_LOGIN_WITHOUT_HOUSEHOLD_ACCESS === 'true' || !config.isProduction;
 
 function retryAfterSeconds(lockedUntilIso) {
   const remainingMs = new Date(lockedUntilIso).getTime() - Date.now();
@@ -48,12 +54,8 @@ router.get('/users', (req, res) => {
     users = invite
       ? db.prepare('SELECT id, household_id, name, role, created_at FROM users WHERE household_id = ? ORDER BY created_at ASC').all(invite.household_id)
       : [];
-  } else if (req.query.householdId) {
-    users = db.prepare(
-      'SELECT id, household_id, name, role, created_at FROM users WHERE household_id = ? ORDER BY created_at ASC'
-    ).all(String(req.query.householdId));
   } else {
-    return res.status(400).json({ error: 'inviteCode or householdId query parameter is required' });
+    return res.status(400).json({ error: 'inviteCode query parameter is required' });
   }
   res.json(users);
 });
@@ -153,12 +155,6 @@ router.post('/register', (req, res) => {
 
   const trimmedName = name.trim().slice(0, 20);
 
-  // Check duplicate name
-  const existing = db.prepare('SELECT id FROM users WHERE name = ? COLLATE NOCASE').get(trimmedName);
-  if (existing) {
-    return res.status(400).json({ error: 'Name already taken' });
-  }
-
   const createdAt = new Date().toISOString();
   let householdId = null;
   let inviteResolution = null;
@@ -174,6 +170,10 @@ router.post('/register', (req, res) => {
     createdHousehold = createHousehold(householdName || `${trimmedName}'s household`);
     householdId = createdHousehold.id;
   } else {
+    if (requireExplicitHouseholdFlow) {
+      return res.status(400).json({ error: 'Provide inviteCode or set createHousehold=true' });
+    }
+
     const firstHousehold = db.prepare('SELECT id FROM households ORDER BY created_at ASC LIMIT 1').get();
     if (firstHousehold) {
       householdId = firstHousehold.id;
@@ -184,6 +184,11 @@ router.post('/register', (req, res) => {
   }
 
   const id = crypto.randomUUID();
+  const existing = db.prepare('SELECT id FROM users WHERE household_id = ? AND name = ? COLLATE NOCASE').get(householdId, trimmedName);
+  if (existing) {
+    return res.status(400).json({ error: 'Name already taken in this household' });
+  }
+
   const pinHash = hashPin(pin);
   const householdUserCount = db.prepare('SELECT COUNT(*) as total FROM users WHERE household_id = ?').get(householdId).total;
   const role = householdUserCount === 0 ? 'admin' : 'child';
@@ -201,6 +206,7 @@ router.post('/register', (req, res) => {
   }
 
   const token = issueSessionToken(id, req);
+  setSessionCookie(res, token);
   const responseBody = {
     token,
     user: { id, household_id: householdId, name: trimmedName, role, created_at: createdAt }
@@ -222,6 +228,10 @@ router.post('/login', (req, res) => {
 
   if (!userId || !pin) {
     return res.status(400).json({ error: 'User ID and PIN required' });
+  }
+
+  if (!householdAccessToken && !allowLegacyLoginWithoutHouseholdAccess) {
+    return res.status(400).json({ error: 'Household access token is required. Re-enter household login details.' });
   }
 
   let householdAccess = null;
@@ -275,6 +285,7 @@ router.post('/login', (req, res) => {
   }
 
   const token = issueSessionToken(user.id, req);
+  setSessionCookie(res, token);
   res.json({
     token,
     user: {
@@ -290,6 +301,7 @@ router.post('/login', (req, res) => {
 // POST /api/auth/logout — Revoke current session
 router.post('/logout', authenticateToken, (req, res) => {
   revokeSession(req.sessionId);
+  clearSessionCookie(res);
   res.json({ message: 'Logged out successfully' });
 });
 

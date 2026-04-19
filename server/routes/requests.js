@@ -5,7 +5,6 @@ const { authenticateToken, requireParentOrAdmin } = require('../middleware/auth'
 const { parsePaging, toAmountCents, sanitizeTags, parseDateInput, nowIso } = require('../services/utils');
 const { requiresApprovalForChildRequest } = require('../services/allowances');
 const { createNotifications, getParentAndAdminIds } = require('../services/notifications');
-const { processDueRecurringRequests } = require('../services/recurring');
 const { requireSameHousehold } = require('../middleware/household');
 
 const router = express.Router();
@@ -97,8 +96,6 @@ function applyFilters(query, reqUserId, params) {
 
 // GET /api/requests — List requests for current user with filters/search
 router.get('/', (req, res) => {
-  processDueRecurringRequests(25, req.householdId);
-
   const paging = parsePaging(req.query);
   if (paging.error) {
     return res.status(400).json({ error: paging.error });
@@ -161,9 +158,9 @@ router.post('/', requireSameHousehold((req) => req.body?.toId), (req, res) => {
 
   db.prepare(
     `INSERT INTO requests
-      (id, from_id, to_id, amount, amount_cents, reason, category, tags_json, settled_cents, requires_approval, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
-  ).run(id, req.userId, toId, Number((amountCents / 100).toFixed(2)), amountCents, safeReason, safeCategory, safeTags, needsApproval ? 1 : 0, status, createdAt);
+      (id, from_id, to_id, amount_cents, reason, category, tags_json, settled_cents, requires_approval, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
+  ).run(id, req.userId, toId, amountCents, safeReason, safeCategory, safeTags, needsApproval ? 1 : 0, status, createdAt);
 
   if (needsApproval) {
     createNotifications(

@@ -22,6 +22,7 @@ function parseHouseholdAccessTtlMinutes(value) {
 
 const HOUSEHOLD_ACCESS_TTL_MINUTES = parseHouseholdAccessTtlMinutes(process.env.HOUSEHOLD_ACCESS_TTL_MINUTES);
 const HOUSEHOLD_ACCESS_PURPOSE = 'household_access';
+const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || 'pt_session';
 
 if (isProduction && !process.env.JWT_SECRET) {
   throw new Error('JWT_SECRET is required when NODE_ENV=production');
@@ -44,6 +45,72 @@ function getClientIp(req) {
   }
 
   return req.ip || req.socket?.remoteAddress || null;
+}
+
+function parseCookies(req) {
+  const cookieHeader = req.headers?.cookie;
+  if (typeof cookieHeader !== 'string' || cookieHeader.trim() === '') {
+    return {};
+  }
+
+  const parsed = {};
+  for (const pair of cookieHeader.split(';')) {
+    const separator = pair.indexOf('=');
+    if (separator <= 0) {
+      continue;
+    }
+
+    const key = pair.slice(0, separator).trim();
+    const rawValue = pair.slice(separator + 1).trim();
+    if (!key) {
+      continue;
+    }
+
+    try {
+      parsed[key] = decodeURIComponent(rawValue);
+    } catch (err) {
+      parsed[key] = rawValue;
+    }
+  }
+
+  return parsed;
+}
+
+function getSessionTokenFromRequest(req) {
+  const cookies = parseCookies(req);
+  const cookieToken = typeof cookies[SESSION_COOKIE_NAME] === 'string'
+    ? cookies[SESSION_COOKIE_NAME].trim()
+    : '';
+  if (cookieToken) {
+    return cookieToken;
+  }
+
+  const authHeader = req.headers['authorization'];
+  if (typeof authHeader === 'string' && authHeader.startsWith(BEARER_PREFIX)) {
+    return authHeader.slice(BEARER_PREFIX.length).trim();
+  }
+
+  return null;
+}
+
+function sessionCookieBaseOptions() {
+  return {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: 'strict',
+    path: '/'
+  };
+}
+
+function setSessionCookie(res, token) {
+  res.cookie(SESSION_COOKIE_NAME, token, {
+    ...sessionCookieBaseOptions(),
+    maxAge: SESSION_TTL_DAYS * 24 * 60 * 60 * 1000
+  });
+}
+
+function clearSessionCookie(res) {
+  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieBaseOptions());
 }
 
 function issueSessionToken(userId, req) {
@@ -106,10 +173,7 @@ function verifyHouseholdAccessToken(token) {
 }
 
 function authenticateToken(req, res, next) {
-  const authHeader = req.headers['authorization'];
-  const token = typeof authHeader === 'string' && authHeader.startsWith(BEARER_PREFIX)
-    ? authHeader.slice(BEARER_PREFIX.length).trim()
-    : null;
+  const token = getSessionTokenFromRequest(req);
 
   if (!token) {
     return res.status(401).json({ error: 'Authentication required' });
@@ -211,11 +275,14 @@ module.exports = {
   issueSessionToken,
   issueHouseholdAccessToken,
   verifyHouseholdAccessToken,
+  setSessionCookie,
+  clearSessionCookie,
   revokeSession,
   revokeAllSessionsForUser,
   requireRoles,
   requireRole,
   requireParentOrAdmin,
   JWT_SECRET,
-  HOUSEHOLD_ACCESS_TTL_MINUTES
+  HOUSEHOLD_ACCESS_TTL_MINUTES,
+  SESSION_COOKIE_NAME
 };

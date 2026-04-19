@@ -40,7 +40,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     household_id TEXT REFERENCES households(id),
-    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    name TEXT NOT NULL COLLATE NOCASE,
     pin_hash TEXT NOT NULL,
     pin_hash_needs_rehash INTEGER NOT NULL DEFAULT 0,
     role TEXT NOT NULL DEFAULT 'child',
@@ -53,7 +53,6 @@ db.exec(`
     id TEXT PRIMARY KEY,
     from_id TEXT NOT NULL REFERENCES users(id),
     to_id TEXT NOT NULL REFERENCES users(id),
-    amount REAL NOT NULL,
     amount_cents INTEGER NOT NULL,
     reason TEXT,
     category TEXT,
@@ -72,7 +71,6 @@ db.exec(`
     id TEXT PRIMARY KEY,
     from_id TEXT NOT NULL REFERENCES users(id),
     to_id TEXT NOT NULL REFERENCES users(id),
-    amount REAL NOT NULL,
     amount_cents INTEGER NOT NULL,
     request_id TEXT REFERENCES requests(id),
     message TEXT,
@@ -188,6 +186,214 @@ function ensureColumn(table, definition) {
   }
 }
 
+function hasLegacyGlobalUserNameConstraint() {
+  const usersTable = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get();
+  if (!usersTable || typeof usersTable.sql !== 'string') {
+    return false;
+  }
+
+  return /name\s+TEXT\s+NOT\s+NULL\s+UNIQUE\s+COLLATE\s+NOCASE/i.test(usersTable.sql);
+}
+
+function ensureUsersHouseholdScopedNameUniqueness() {
+  if (!hasLegacyGlobalUserNameConstraint()) {
+    return;
+  }
+
+  const migrateUsersTable = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE users_next (
+        id TEXT PRIMARY KEY,
+        household_id TEXT REFERENCES households(id),
+        name TEXT NOT NULL COLLATE NOCASE,
+        pin_hash TEXT NOT NULL,
+        pin_hash_needs_rehash INTEGER NOT NULL DEFAULT 0,
+        role TEXT NOT NULL DEFAULT 'child',
+        failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+        locked_until TEXT,
+        created_at TEXT NOT NULL
+      );
+    `);
+
+    db.exec(`
+      INSERT INTO users_next (
+        id,
+        household_id,
+        name,
+        pin_hash,
+        pin_hash_needs_rehash,
+        role,
+        failed_login_attempts,
+        locked_until,
+        created_at
+      )
+      SELECT
+        id,
+        household_id,
+        name,
+        pin_hash,
+        pin_hash_needs_rehash,
+        role,
+        failed_login_attempts,
+        locked_until,
+        created_at
+      FROM users;
+    `);
+
+    db.exec('DROP TABLE users');
+    db.exec('ALTER TABLE users_next RENAME TO users');
+  });
+
+  const foreignKeysEnabled = db.pragma('foreign_keys', { simple: true }) === 1;
+  if (foreignKeysEnabled) {
+    db.pragma('foreign_keys = OFF');
+  }
+
+  try {
+    migrateUsersTable();
+  } finally {
+    if (foreignKeysEnabled) {
+      db.pragma('foreign_keys = ON');
+    }
+  }
+}
+
+function ensureMoneyTablesUseCentsOnly() {
+  const requestsHasAmount = hasColumn('requests', 'amount');
+  const paymentsHasAmount = hasColumn('payments', 'amount');
+
+  if (!requestsHasAmount && !paymentsHasAmount) {
+    return;
+  }
+
+  const migrateMoneyTables = db.transaction(() => {
+    if (requestsHasAmount) {
+      db.exec(`
+        CREATE TABLE requests_next (
+          id TEXT PRIMARY KEY,
+          from_id TEXT NOT NULL REFERENCES users(id),
+          to_id TEXT NOT NULL REFERENCES users(id),
+          amount_cents INTEGER NOT NULL,
+          reason TEXT,
+          category TEXT,
+          tags_json TEXT,
+          recurring_id TEXT,
+          settled_cents INTEGER NOT NULL DEFAULT 0,
+          requires_approval INTEGER NOT NULL DEFAULT 0,
+          approved_by TEXT REFERENCES users(id),
+          approved_at TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at TEXT NOT NULL,
+          resolved_at TEXT
+        );
+      `);
+
+      db.exec(`
+        INSERT INTO requests_next (
+          id,
+          from_id,
+          to_id,
+          amount_cents,
+          reason,
+          category,
+          tags_json,
+          recurring_id,
+          settled_cents,
+          requires_approval,
+          approved_by,
+          approved_at,
+          status,
+          created_at,
+          resolved_at
+        )
+        SELECT
+          id,
+          from_id,
+          to_id,
+          amount_cents,
+          reason,
+          category,
+          tags_json,
+          recurring_id,
+          settled_cents,
+          requires_approval,
+          approved_by,
+          approved_at,
+          status,
+          created_at,
+          resolved_at
+        FROM requests;
+      `);
+
+      db.exec('DROP TABLE requests');
+      db.exec('ALTER TABLE requests_next RENAME TO requests');
+    }
+
+    if (paymentsHasAmount) {
+      db.exec(`
+        CREATE TABLE payments_next (
+          id TEXT PRIMARY KEY,
+          from_id TEXT NOT NULL REFERENCES users(id),
+          to_id TEXT NOT NULL REFERENCES users(id),
+          amount_cents INTEGER NOT NULL,
+          request_id TEXT REFERENCES requests(id),
+          message TEXT,
+          category TEXT,
+          tags_json TEXT,
+          status TEXT NOT NULL DEFAULT 'sent',
+          created_at TEXT NOT NULL,
+          resolved_at TEXT
+        );
+      `);
+
+      db.exec(`
+        INSERT INTO payments_next (
+          id,
+          from_id,
+          to_id,
+          amount_cents,
+          request_id,
+          message,
+          category,
+          tags_json,
+          status,
+          created_at,
+          resolved_at
+        )
+        SELECT
+          id,
+          from_id,
+          to_id,
+          amount_cents,
+          request_id,
+          message,
+          category,
+          tags_json,
+          status,
+          created_at,
+          resolved_at
+        FROM payments;
+      `);
+
+      db.exec('DROP TABLE payments');
+      db.exec('ALTER TABLE payments_next RENAME TO payments');
+    }
+  });
+
+  const foreignKeysEnabled = db.pragma('foreign_keys', { simple: true }) === 1;
+  if (foreignKeysEnabled) {
+    db.pragma('foreign_keys = OFF');
+  }
+
+  try {
+    migrateMoneyTables();
+  } finally {
+    if (foreignKeysEnabled) {
+      db.pragma('foreign_keys = ON');
+    }
+  }
+}
+
 function ensureHouseholdLoginCredentials() {
   const households = db.prepare('SELECT id, login_id, login_code_hash FROM households ORDER BY created_at ASC').all();
   if (households.length === 0) {
@@ -239,6 +445,8 @@ function ensureBaseMigrations() {
   ensureColumn('users', 'failed_login_attempts INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'locked_until TEXT');
 
+  ensureUsersHouseholdScopedNameUniqueness();
+
   const hadPinRehashColumn = hasColumn('users', 'pin_hash_needs_rehash');
   ensureColumn('users', 'pin_hash_needs_rehash INTEGER NOT NULL DEFAULT 0');
 
@@ -280,10 +488,17 @@ function ensureBaseMigrations() {
     db.exec('UPDATE users SET pin_hash_needs_rehash = 1');
   }
 
-  db.exec('UPDATE requests SET amount_cents = CAST(ROUND(amount * 100) AS INTEGER) WHERE amount_cents IS NULL');
+  if (hasColumn('requests', 'amount')) {
+    db.exec('UPDATE requests SET amount_cents = CAST(ROUND(amount * 100) AS INTEGER) WHERE amount_cents IS NULL');
+  }
   db.exec('UPDATE requests SET settled_cents = 0 WHERE settled_cents IS NULL');
   db.exec('UPDATE requests SET requires_approval = 0 WHERE requires_approval IS NULL');
-  db.exec('UPDATE payments SET amount_cents = CAST(ROUND(amount * 100) AS INTEGER) WHERE amount_cents IS NULL');
+
+  if (hasColumn('payments', 'amount')) {
+    db.exec('UPDATE payments SET amount_cents = CAST(ROUND(amount * 100) AS INTEGER) WHERE amount_cents IS NULL');
+  }
+
+  ensureMoneyTablesUseCentsOnly();
 
   const adminCount = db.prepare("SELECT COUNT(*) AS total FROM users WHERE role = 'admin'").get().total;
   if (adminCount === 0) {
@@ -307,6 +522,7 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_recurring_next_run ON recurring_requests
 db.exec('CREATE INDEX IF NOT EXISTS idx_allowances_child_active ON allowances(child_id, active)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_attachments_ref ON attachments(ref_type, ref_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_users_household ON users(household_id)');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_household_name_unique ON users(household_id, name COLLATE NOCASE)');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_households_login_id ON households(login_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_household_invites_lookup ON household_invites(code, household_id, used_at, expires_at)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_rate_limit_window_start ON rate_limit_attempts(window_start)');

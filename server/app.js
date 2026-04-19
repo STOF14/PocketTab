@@ -31,6 +31,7 @@ app.set('trust proxy', config.trustProxy);
 function requireJsonContentType(req, res, next) {
   const methodRequiresJson = req.method === 'POST' || req.method === 'PATCH';
   const isApiRoute = req.path.startsWith('/api/');
+  const isAttachmentUpload = req.method === 'POST' && /^\/api\/attachments\/?$/.test(req.path);
   const contentType = req.headers['content-type'];
   const contentLength = Number(req.headers['content-length'] || '0');
   const hasTransferEncoding = typeof req.headers['transfer-encoding'] === 'string';
@@ -41,6 +42,10 @@ function requireJsonContentType(req, res, next) {
   }
 
   if (!contentType && !hasRequestBody) {
+    return next();
+  }
+
+  if (isAttachmentUpload && req.is('multipart/form-data')) {
     return next();
   }
 
@@ -98,6 +103,16 @@ if (config.rateLimit.enabled) {
   });
   app.use('/api/auth/login', authLimiter);
   app.use('/api/auth/register', authLimiter);
+
+  const householdAccessLimiter = rateLimit({
+    windowMs: config.rateLimit.windowMs,
+    max: config.rateLimit.householdAccessMax,
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: new SqliteRateLimitStore({ prefix: 'household-access' }),
+    message: { error: 'Too many household access attempts, please try again later' }
+  });
+  app.use('/api/auth/household/access', householdAccessLimiter);
 }
 
 // Serve static files from public/

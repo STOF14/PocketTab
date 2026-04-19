@@ -78,6 +78,24 @@ function requestLogger(options = {}) {
 // Apply baseline browser hardening headers for every response.
 // HSTS is only enabled in production deployments behind HTTPS.
 function securityHeaders(req, res, next) {
+  const cspDirectives = [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "object-src 'none'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "connect-src 'self'"
+  ];
+
+  if (process.env.NODE_ENV === 'production') {
+    cspDirectives.push('upgrade-insecure-requests');
+  }
+
+  res.setHeader('Content-Security-Policy', cspDirectives.join('; '));
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');

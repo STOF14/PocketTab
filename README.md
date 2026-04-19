@@ -153,7 +153,9 @@ npm run monitor:health
 | `PIN_PEPPER` | required in production | Server-side pepper appended to PIN before hashing |
 | `PIN_BCRYPT_ROUNDS` | `12` (minimum 12) | bcrypt cost factor for PIN hashing |
 | `SESSION_TTL_DAYS` | `7` (clamped 1-30) | Session/JWT lifetime in days |
+| `SESSION_COOKIE_NAME` | `pt_session` | Name of httpOnly session cookie |
 | `HOUSEHOLD_ACCESS_TTL_MINUTES` | `10` (clamped 1-30) | Temporary household-access token lifetime |
+| `ALLOW_LEGACY_LOGIN_WITHOUT_HOUSEHOLD_ACCESS` | `false` in production, `true` otherwise | Allow direct PIN login without household access token |
 | `PIN_MAX_ATTEMPTS` | `5` | Failed login attempts before lock |
 | `PIN_LOCK_MINUTES` | `15` | Lockout duration |
 
@@ -175,12 +177,17 @@ npm run monitor:health
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window |
 | `GLOBAL_RATE_LIMIT_MAX` | production `300`, otherwise `100` | Global request cap per window |
 | `AUTH_RATE_LIMIT_MAX` | production `30`, otherwise `10` | Auth request cap per window |
+| `HOUSEHOLD_ACCESS_RATE_LIMIT_MAX` | production `20`, otherwise `10` | Household access request cap per window |
+| `MAX_ATTACHMENT_BYTES` | `5242880` (5 MiB) | Max upload size for multipart attachment file payloads |
+| `ALLOWED_ATTACHMENT_MIME_TYPES` | `application/pdf,application/octet-stream,image/jpeg,image/png,image/webp,text/plain` | Comma-separated MIME allowlist for attachment uploads |
 
 ### Administrative safety switches
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `ALLOW_DATA_RESET` | `false` | Enables `DELETE /api/users/reset-all` |
+| `DATA_RESET_SECRET` | unset | Required secret for `DELETE /api/users/reset-all` |
+| `ALLOW_DATA_RESET_HTTP` | `false` | In production, must be `true` to allow reset endpoint over HTTP |
 
 ### Backup and restore tooling
 
@@ -256,11 +263,11 @@ Primary tables include:
 Important notes:
 
 - Monetary values are persisted in integer cents (`*_cents`) for correctness.
-- Legacy decimal amount fields are still present for API compatibility.
 - Household login credentials are stored as:
   - `households.login_id`
   - `households.login_code_hash`
 - PIN and household codes are not stored in plaintext.
+- Display names are unique per household (case-insensitive).
 
 ## API Reference
 
@@ -276,11 +283,11 @@ All API routes are mounted under `/api`.
 
 | Method | Endpoint | Auth | Description |
 | --- | --- | --- | --- |
-| GET | `/api/auth/users` | No | User listing with required scope (`inviteCode` or `householdId`) |
+| GET | `/api/auth/users` | No | User listing scoped by `inviteCode` |
 | POST | `/api/auth/household/access` | No | Validate household ID/code and return members + temporary access token |
 | GET | `/api/auth/invites/:code` | No | Validate invite code and preview household |
 | POST | `/api/auth/register` | No | Register user (join by invite or create household) |
-| POST | `/api/auth/login` | No | Login with `userId + pin` and optional `householdAccessToken` |
+| POST | `/api/auth/login` | No | Login with `userId + pin` (production requires `householdAccessToken` unless explicitly overridden) |
 | POST | `/api/auth/logout` | Yes | Revoke current session |
 | GET | `/api/auth/household` | Yes | Current household details |
 | GET | `/api/auth/household/members` | Yes | Members in current household |
@@ -300,7 +307,7 @@ All API routes are mounted under `/api`.
 | POST | `/api/users/:id/pin-reset` | Yes (parent/admin) | Reset another member PIN |
 | GET | `/api/users/sessions` | Yes | List sessions for self (or `userId` when admin) |
 | DELETE | `/api/users/sessions/:id` | Yes | Revoke session |
-| DELETE | `/api/users/reset-all` | Yes (parent/admin) | Household data reset (guarded by env switch) |
+| DELETE | `/api/users/reset-all` | Yes (admin) | Household data reset (requires env switch + reset secret) |
 
 ### Requests and payments
 
@@ -322,9 +329,11 @@ All API routes are mounted under `/api`.
 | GET | `/api/messages` | Yes | List thread messages by `refType` and `refId` |
 | POST | `/api/messages` | Yes | Post message |
 | GET | `/api/attachments` | Yes | List attachments by `refType` and `refId` |
-| POST | `/api/attachments` | Yes | Upload base64 attachment |
+| POST | `/api/attachments` | Yes | Upload multipart attachment (`refType`, `refId`, `file`) |
 | GET | `/api/attachments/:id/download` | Yes | Download attachment |
 | DELETE | `/api/attachments/:id` | Yes | Delete attachment |
+
+Attachment uploads use `multipart/form-data` and must include the binary file in form field `file`.
 
 ### Notifications
 
@@ -352,6 +361,8 @@ All API routes are mounted under `/api`.
 | GET | `/api/reports/export.csv` | Yes | CSV export |
 | GET | `/api/reports/export.pdf` | Yes | Lightweight PDF-like export |
 
+Recurring generation is executed only by `POST /api/recurring/run`.
+
 ## Frontend Runtime Behavior
 
 The frontend reads optional runtime config from `window.POCKETTAB_CONFIG`.
@@ -364,8 +375,7 @@ Supported keys:
 
 Other behavior:
 
-- Token is stored in localStorage key `pt_token`
-- Current user is stored in localStorage key `pt_user`
+- Session authentication uses an httpOnly same-site cookie (default name `pt_session`)
 - API calls are made to same-origin `/api/*`
 
 ## Operations Runbook
@@ -470,9 +480,12 @@ node --test --test-name-pattern "household access" test/api.test.js
 - Production requires `JWT_SECRET` and `PIN_PEPPER`
 - PIN and household code verification use bcrypt hashes
 - Session records include token hash and revocation state
+- Browser sessions use httpOnly same-site cookies
 - Rate limiting protects global API and auth routes
+- Dedicated limiter protects `/api/auth/household/access`
 - JSON content-type enforcement helps reject malformed non-JSON writes
 - Household and role checks are enforced on protected resources
+- Content Security Policy is enabled in security headers
 
 ## Known Gaps and Non-Goals
 
@@ -484,6 +497,7 @@ Current limitations:
 - No guest/read-only role
 - Settlement API exists, but guided settlement UX remains API-first
 - Household login ID format is intentionally temporary (`PT-{FRUIT}`), with suffix fallback if collisions increase
+- Detailed hardening findings and prioritized remediation plan are tracked in `ClaudeFixes.md` (single source of truth)
 
 ## Troubleshooting
 

@@ -17,12 +17,48 @@ function parsePaging(query) {
 }
 
 function toAmountCents(amount) {
-  const amountNum = Number.parseFloat(amount);
-  if (!Number.isFinite(amountNum)) {
+  if (typeof amount === 'number') {
+    if (!Number.isFinite(amount)) {
+      return NaN;
+    }
+
+    const scaled = amount * 100;
+    if (Math.abs(Math.round(scaled) - scaled) > 1e-8) {
+      return NaN;
+    }
+
+    const centsFromNumber = Math.round(scaled);
+    return Number.isSafeInteger(centsFromNumber) ? centsFromNumber : NaN;
+  }
+
+  if (typeof amount !== 'string') {
     return NaN;
   }
 
-  return Math.round(amountNum * 100);
+  const normalized = amount.trim();
+  if (!/^-?\d+(?:\.\d{1,2})?$/.test(normalized)) {
+    return NaN;
+  }
+
+  const isNegative = normalized.startsWith('-');
+  const unsigned = isNegative ? normalized.slice(1) : normalized;
+  const [wholePartRaw, decimalPartRaw = ''] = unsigned.split('.');
+  const wholePart = Number.parseInt(wholePartRaw, 10);
+  if (!Number.isSafeInteger(wholePart)) {
+    return NaN;
+  }
+
+  const decimalPart = Number.parseInt(decimalPartRaw.padEnd(2, '0'), 10) || 0;
+  let cents = wholePart * 100 + decimalPart;
+  if (!Number.isSafeInteger(cents)) {
+    return NaN;
+  }
+
+  if (isNegative) {
+    cents *= -1;
+  }
+
+  return cents;
 }
 
 function centsToAmount(amountCents) {
