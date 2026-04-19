@@ -11,14 +11,174 @@
     Currency: ZAR (South African Rand, R prefix)
     Unlimited users, multi-device sync, PIN-based authentication with JWT
   -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div id="connectivity-banner" class="connectivity-banner hidden" role="status" aria-live="polite"></div>
 
+  <!-- ===== LANDING PAGE ===== -->
+  <main id="landing-page">
+    <header class="landing-header">
+      <div class="landing-shell landing-header-inner">
+        <div class="landing-brand">
+          <span class="landing-brand-mark" aria-hidden="true">PT</span>
+          <span class="landing-brand-text">PocketTab</span>
+        </div>
+        <p class="landing-header-note">For families, housemates, and shared households.</p>
+        <div class="landing-header-actions">
+          <button type="button" class="landing-ghost-btn" data-landing-scroll="landing-features">How It Works</button>
+          <button type="button" class="landing-start-btn" data-landing-action="start">Start Free</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="landing-hero">
+      <div class="landing-shell landing-hero-grid">
+        <div class="landing-hero-copy landing-reveal">
+          <p id="landing-kicker" class="landing-kicker">Family Finance, No Chaos</p>
+          <h1 id="landing-headline">Keep family money clear, calm, and fair.</h1>
+          <p id="landing-subcopy" class="landing-subcopy">
+            PocketTab gives your household one place to request money, approve spending, confirm payments,
+            and stay in sync without spreadsheets, screenshots, or awkward reminders.
+          </p>
+
+          <div class="landing-cta-row">
+            <button id="landing-hero-cta" type="button" class="landing-primary" data-landing-action="start">Start Using PocketTab</button>
+            <button type="button" class="landing-secondary" data-landing-scroll="landing-pitch">See How It Works</button>
+          </div>
+
+          <button type="button" class="landing-scroll-cue" data-landing-scroll="landing-features" aria-label="Scroll to see how PocketTab works">
+            See how it works ↓
+          </button>
+
+          <ul class="landing-bullets" aria-label="Core value points">
+            <li>Everyone in your home sees the same money picture</li>
+            <li>Requests and payments stay organized in one timeline</li>
+            <li>Parents can guide spending without micromanaging</li>
+          </ul>
+        </div>
+
+        <aside class="landing-hero-board landing-reveal" aria-label="PocketTab preview">
+          <div class="preview-topbar">
+            <span>Household Board</span>
+            <span class="preview-status">Live</span>
+          </div>
+          <div class="preview-metric-grid">
+            <article>
+              <h3>Pending Requests</h3>
+              <p>04</p>
+            </article>
+            <article>
+              <h3>Payments To Confirm</h3>
+              <p>02</p>
+            </article>
+            <article>
+              <h3>Resolved This Week</h3>
+              <p>19</p>
+            </article>
+            <article>
+              <h3>Open Invite Codes</h3>
+              <p>01</p>
+            </article>
+          </div>
+          <div class="preview-feed">
+            <p><strong>10:14</strong> Teen requested R120 for school lunch.</p>
+            <p><strong>10:17</strong> Parent approved child request.</p>
+            <p><strong>10:23</strong> Payment confirmed by recipient.</p>
+          </div>
+        </aside>
+      </div>
+
+      <div class="landing-mobile-cta" aria-label="Quick start">
+        <button type="button" class="landing-primary" data-landing-action="start">Start Free</button>
+      </div>
+    </section>
+
+    <section id="landing-proof" class="landing-proof">
+      <div class="landing-shell">
+            <span>Invite your whole household in minutes</span>
+            <span>Each member gets their own secure PIN</span>
+            <span>Track requests, payments, and disputes clearly</span>
+            <span>Keep one reliable history everyone can check</span>
+          <span>Works anywhere your household logs in</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="landing-features" class="landing-features">
+      <div class="landing-shell">
+        <div class="landing-section-heading landing-reveal">
+          <p class="landing-kicker">Why Families Choose PocketTab</p>
+          <h2>Every money decision is clear, trackable, and easier to agree on.</h2>
+        </div>
+
+        <div class="landing-feature-grid">
+          <article class="feature-card landing-reveal">
+            <h3>Ask For Money Clearly</h3>
+            <p>Kids or adults can request what they need, with the amount and reason saved in one place.</p>
+          </article>
+          <article class="feature-card landing-reveal">
+            <h3>Approve In Seconds</h3>
+            <p>Parents and admins can approve, decline, or partially settle requests without back-and-forth chat.</p>
+          </article>
+          <article class="feature-card landing-reveal">
+            <h3>Confirm What Was Paid</h3>
+            <p>When someone sends money, the recipient confirms it so everyone knows exactly where things stand.</p>
+          </article>
+          <article class="feature-card landing-reveal">
+            <h3>Handle Repeats Easily</h3>
+            <p>Set up recurring requests for things like transport, lunches, data, or weekly allowances.</p>
+          </article>
+          <article class="feature-card landing-reveal">
+            <h3>Safe For Every Member</h3>
+            <p>Each person has their own PIN, and parents keep control of the actions that matter most.</p>
+          </article>
+          <article class="feature-card landing-reveal">
+            <h3>See The Full Story</h3>
+            <p>If questions come up later, your household history shows what was requested, approved, paid, and when.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="landing-pitch" class="landing-pitch">
+      <div class="landing-shell">
+        <div class="landing-section-heading landing-reveal">
+          <p class="landing-kicker">How It Works</p>
+          <h2>Get your household set up in three simple steps.</h2>
+        </div>
+
+        <ol class="pitch-steps">
+          <li class="landing-reveal">
+            <h3>Step 1: Create Your Household</h3>
+            <p>Set a household name, invite family members, and let each person create their own profile.</p>
+          </li>
+          <li class="landing-reveal">
+            <h3>Step 2: Run Daily Money Requests</h3>
+            <p>Submit requests, approve what makes sense, and keep every decision visible to the whole household.</p>
+          </li>
+          <li class="landing-reveal">
+            <h3>Step 3: Confirm Payments And Move On</h3>
+            <p>Mark payments as completed, resolve disputes quickly, and stop arguing about who still owes what.</p>
+          </li>
+        </ol>
+
+        <div class="landing-final-card landing-reveal">
+          <p>
+            <strong>PocketTab makes shared family money simple:</strong>
+            everyone knows what was asked, what was approved, and what was paid.
+          </p>
+          <button type="button" class="landing-primary" data-landing-action="start">Create My Household</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
   <!-- ===== AUTH SCREEN ===== -->
-  <div id="auth-screen">
+  <div id="auth-screen" class="hidden">
     <div class="auth-box">
       <h1>PocketTab</h1>
 

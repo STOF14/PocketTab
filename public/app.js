@@ -2,14 +2,14 @@
      * ===== POCKETTAB: FULL-STACK APPLICATION LOGIC =====
      *
      * All data is stored on the server via REST API.
-     * Authentication uses JWT tokens stored in localStorage.
+    * Authentication uses server-managed session cookies.
      * Data syncs across all users and devices through the shared backend.
      *
      * API Endpoints:
     *   POST   /api/auth/household/access — Validate household login ID + code
     *   GET    /api/auth/household/members — List users in signed-in household
-     *   POST   /api/auth/register      — Create user (returns JWT)
-    *   POST   /api/auth/login         — Login with household access token + PIN
+    *   POST   /api/auth/register      — Create user (sets session cookie)
+    *   POST   /api/auth/login         — Login with household access token + PIN (sets session cookie)
     *   POST   /api/auth/household/invites — Create household invite code
      *   GET    /api/requests           — List requests for current user
      *   POST   /api/requests           — Create a request
@@ -24,7 +24,6 @@
 
     // ===== API HELPER =====
     var runtimeConfig = window.POCKETTAB_CONFIG || {};
-    var authToken = localStorage.getItem('pt_token') || null;
     var REQUEST_TIMEOUT_MS = Number(runtimeConfig.requestTimeoutMs) || 10000;
     var MAX_SAFE_RETRIES = Number(runtimeConfig.maxSafeRetries) || 2;
     var RETRY_BASE_DELAY_MS = Number(runtimeConfig.retryBaseDelayMs) || 300;
@@ -71,11 +70,9 @@
     async function api(method, path, body) {
       var opts = {
         method: method,
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' }
       };
-      if (authToken) {
-        opts.headers['Authorization'] = 'Bearer ' + authToken;
-      }
       if (body) {
         opts.body = JSON.stringify(body);
       }
@@ -88,7 +85,13 @@
           var res = await fetchWithTimeout('/api' + path, opts);
           var data = null;
           var text = await res.text();
-          if (text) data = JSON.parse(text);
+          if (text) {
+            try {
+              data = JSON.parse(text);
+            } catch (parseErr) {
+              data = null;
+            }
+          }
 
           if (!res.ok) {
             throw new Error((data && data.error) || 'API error');
@@ -126,7 +129,7 @@
     /** Load users from server */
     async function loadUsers() {
       try {
-        if (!authToken || !currentUser) {
+        if (!currentUser) {
           cachedUsers = [];
           return;
         }
@@ -206,38 +209,94 @@
     // ===== DOM REFERENCES =====
     var authScreen = document.getElementById('auth-screen');
     var appScreen = document.getElementById('app-screen');
+    var landingPage = document.getElementById('landing-page');
     var authSelect = document.getElementById('auth-select');
     var authCreate = document.getElementById('auth-create');
 
     // ===== INITIALIZATION =====
     async function init() {
       setupEventListeners();
+      applyLandingMessageFromQuery();
       updateConnectivityFromNavigator();
 
-      // Check for existing session token
-      var token = localStorage.getItem('pt_token');
-
-      if (token) {
-        authToken = token;
-        try {
-          currentUser = await api('GET', '/users/me');
-          localStorage.setItem('pt_user', JSON.stringify(currentUser));
-          enterApp();
-          return;
-        } catch (e) {
-          authToken = null;
-          localStorage.removeItem('pt_token');
-          localStorage.removeItem('pt_user');
-        }
+      try {
+        currentUser = await api('GET', '/users/me');
+        enterApp();
+        return;
+      } catch (e) {
+        // No active cookie-backed session.
       }
 
+      showLanding();
+    }
+
+    function showLanding() {
+      if (landingPage) {
+        landingPage.classList.remove('hidden');
+      }
+      authScreen.classList.add('hidden');
+      appScreen.classList.add('hidden');
+    }
+
+    function openAuthFromLanding() {
       showAuth();
+      var householdInput = document.getElementById('login-household-id');
+      if (householdInput) {
+        householdInput.focus();
+      }
+    }
+
+    function scrollLandingTo(sectionId) {
+      if (!sectionId) {
+        return;
+      }
+
+      var target = document.getElementById(sectionId);
+      if (!target) {
+        return;
+      }
+
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function applyLandingTextParam(params, paramName, elementId, maxLength) {
+      var node = document.getElementById(elementId);
+      if (!node) {
+        return;
+      }
+
+      var value = params.get(paramName);
+      if (!value) {
+        return;
+      }
+
+      var cleanValue = String(value).trim();
+      if (!cleanValue) {
+        return;
+      }
+
+      node.textContent = cleanValue.slice(0, maxLength);
+    }
+
+    function applyLandingMessageFromQuery() {
+      if (!landingPage || typeof URLSearchParams === 'undefined') {
+        return;
+      }
+
+      var params = new URLSearchParams(window.location.search || '');
+      applyLandingTextParam(params, 'lp_kicker', 'landing-kicker', 50);
+      applyLandingTextParam(params, 'lp_headline', 'landing-headline', 110);
+      applyLandingTextParam(params, 'lp_subcopy', 'landing-subcopy', 240);
+      applyLandingTextParam(params, 'lp_cta', 'landing-hero-cta', 40);
     }
 
     // ===== AUTH FUNCTIONS =====
 
     /** Show authentication screen */
     async function showAuth() {
+      if (landingPage) {
+        landingPage.classList.add('hidden');
+      }
       authScreen.classList.remove('hidden');
       appScreen.classList.add('hidden');
       currentUser = null;
@@ -245,10 +304,7 @@
       loginHouseholdAccessToken = null;
       loginHouseholdContext = null;
       cachedHousehold = null;
-      authToken = null;
       cachedUsers = [];
-      localStorage.removeItem('pt_token');
-      localStorage.removeItem('pt_user');
       resetCreateFlow();
       resetLoginFlow();
       authCreate.classList.add('hidden');
@@ -405,10 +461,7 @@
           pin: pin,
           householdAccessToken: loginHouseholdAccessToken
         });
-        authToken = result.token;
         currentUser = result.user;
-        localStorage.setItem('pt_token', result.token);
-        localStorage.setItem('pt_user', JSON.stringify(result.user));
         enterApp();
       } catch (e) {
         if ((e.message || '').toLowerCase().indexOf('household access expired') !== -1) {
@@ -422,6 +475,9 @@
 
     /** Enter the app after successful auth */
     async function enterApp() {
+      if (landingPage) {
+        landingPage.classList.add('hidden');
+      }
       authScreen.classList.add('hidden');
       appScreen.classList.remove('hidden');
       document.getElementById('header-user-name').textContent = currentUser.name;
@@ -651,10 +707,7 @@
         });
 
         // Auto-login after registration
-        authToken = result.token;
         currentUser = result.user;
-        localStorage.setItem('pt_token', result.token);
-        localStorage.setItem('pt_user', JSON.stringify(result.user));
 
         if (pathKind === 'new' && result.user && result.user.role === 'admin') {
           var householdLoginId = result.householdAuth?.householdLoginId;
@@ -1379,9 +1432,6 @@
         document.getElementById('settings-new-pin').value = '';
 
         if (result && result.sessionRevoked) {
-          localStorage.removeItem('pt_token');
-          localStorage.removeItem('pt_user');
-          authToken = null;
           currentUser = null;
           alert('PIN updated. Please sign in again.');
           showAuth();
@@ -1472,6 +1522,16 @@
       }
     }
 
+    async function logoutAndShowAuth() {
+      try {
+        await api('POST', '/auth/logout', {});
+      } catch (e) {
+        // Ignore logout errors and still clear client state.
+      }
+
+      showAuth();
+    }
+
     /** Reset all server data (requires backend ALLOW_DATA_RESET=true) */
     async function resetAllData() {
       var approved = confirm('This will delete ALL server data for every user. Continue?');
@@ -1509,6 +1569,15 @@
         }
       });
       window.addEventListener('offline', updateConnectivityFromNavigator);
+
+      document.querySelectorAll('[data-landing-action="start"]').forEach(function(btn) {
+        btn.addEventListener('click', openAuthFromLanding);
+      });
+      document.querySelectorAll('[data-landing-scroll]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          scrollLandingTo(btn.getAttribute('data-landing-scroll'));
+        });
+      });
 
       document.getElementById('btn-create-user').addEventListener('click', function() {
         resetCreateFlow();
@@ -1568,7 +1637,7 @@
         if (e.key === 'Enter') verifyInviteCode();
       });
 
-      document.getElementById('btn-logout').addEventListener('click', function() { showAuth(); });
+      document.getElementById('btn-logout').addEventListener('click', logoutAndShowAuth);
 
       document.querySelectorAll('#nav-tabs button').forEach(function(btn) {
         btn.addEventListener('click', function() {
