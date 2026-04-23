@@ -201,6 +201,20 @@
             <div class="error-msg hidden" id="login-household-error"></div>
           </div>
           <button class="btn-full btn-navy" id="btn-login-household" style="margin-bottom: 12px;">Continue</button>
+          <button class="btn-full" id="btn-toggle-household-recovery" type="button" style="margin-bottom: 8px;">Forgot Household ID Or Code?</button>
+          <div id="household-recovery-panel" class="hidden" style="margin-bottom: 12px;">
+            <div class="form-group">
+              <label for="recovery-member-name">Admin/Parent Name</label>
+              <input type="text" id="recovery-member-name" maxlength="20" placeholder="Name on your profile" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="form-group">
+              <label for="recovery-member-pin">Admin/Parent PIN</label>
+              <input type="password" id="recovery-member-pin" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" placeholder="4-digit PIN" autocomplete="off">
+            </div>
+            <button class="btn-full" id="btn-recover-household" type="button">Reset Household Login Details</button>
+            <p class="onboarding-note" style="margin-top: 8px;">This creates a fresh household ID and code for security.</p>
+            <div class="error-msg hidden" id="household-recovery-error" style="margin-top: 8px;"></div>
+          </div>
           <button class="btn-full btn-google hidden" id="btn-google-login" type="button" style="margin-bottom: 8px;">
             <svg class="google-icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
               <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.9c1.7-1.56 2.7-3.86 2.7-6.62z"/>
@@ -477,6 +491,16 @@
           <div class="section-title">Settings</div>
 
           <div class="settings-section">
+            <h3>Username</h3>
+            <div class="form-group">
+              <label for="settings-new-name">New Username</label>
+              <input type="text" id="settings-new-name" maxlength="20" autocomplete="off">
+            </div>
+            <button class="btn-full" id="btn-change-name">Update Username</button>
+            <div class="error-msg hidden" id="settings-name-error" style="margin-top: 8px;"></div>
+          </div>
+
+          <div class="settings-section">
             <h3>Change PIN</h3>
             <div class="form-group">
               <label for="settings-old-pin">Current PIN</label>
@@ -500,6 +524,26 @@
           <div class="settings-section">
             <h3>All Users</h3>
             <ul class="user-list" id="settings-user-list" style="cursor: default;"></ul>
+          </div>
+
+          <div class="settings-section hidden" id="settings-member-reset-section">
+            <h3>Reset Member Username/PIN</h3>
+            <div class="form-group">
+              <label for="settings-reset-user">Member</label>
+              <select id="settings-reset-user">
+                <option value="">-- Select member --</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="settings-reset-name">New Username (optional)</label>
+              <input type="text" id="settings-reset-name" maxlength="20" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label for="settings-reset-pin">New PIN (optional)</label>
+              <input type="password" id="settings-reset-pin" maxlength="4" inputmode="numeric" autocomplete="off">
+            </div>
+            <button class="btn-full" id="btn-reset-member-credentials">Reset Member Credentials</button>
+            <div class="error-msg hidden" id="settings-member-reset-error" style="margin-top: 8px;"></div>
           </div>
 
           <div class="settings-section">

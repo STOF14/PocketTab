@@ -251,6 +251,77 @@ test('household access endpoint gates member login to the resolved household', a
   assert.equal(outsiderLoginDenied.status, 404);
 });
 
+test('household recovery reset rotates login credentials for admin', async () => {
+  const suffix = uniqueSuffix();
+  const adminRes = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `RecoverAdmin-${suffix}`,
+      pin: '4422',
+      createHousehold: true,
+      householdName: `Recovery Household ${suffix}`
+    });
+  assert.equal(adminRes.status, 201);
+
+  const originalLoginId = adminRes.body.householdAuth.householdLoginId;
+  const originalCode = adminRes.body.householdAuth.householdCode;
+
+  const recovery = await request(app)
+    .post('/api/auth/household/recover-reset')
+    .send({ memberName: `RecoverAdmin-${suffix}`, pin: '4422', rotateLoginId: true });
+  assert.equal(recovery.status, 200);
+  assert.match(recovery.body.householdLoginId, /^PT-[A-Z]+(?:-[A-F0-9]{4})?$/);
+  assert.match(recovery.body.householdCode, /^\d{6}$/);
+  assert.notEqual(recovery.body.householdCode, originalCode);
+
+  const oldAccessDenied = await request(app)
+    .post('/api/auth/household/access')
+    .send({ householdLoginId: originalLoginId, householdCode: originalCode });
+  assert.equal(oldAccessDenied.status, 401);
+
+  const newAccessAllowed = await request(app)
+    .post('/api/auth/household/access')
+    .send({
+      householdLoginId: recovery.body.householdLoginId,
+      householdCode: recovery.body.householdCode
+    });
+  assert.equal(newAccessAllowed.status, 200);
+});
+
+test('household recovery reset rejects non-admin members', async () => {
+  const suffix = uniqueSuffix();
+
+  const adminRes = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `RecoveryRoleAdmin-${suffix}`,
+      pin: '1111',
+      createHousehold: true,
+      householdName: `Recovery Role ${suffix}`
+    });
+  assert.equal(adminRes.status, 201);
+
+  const inviteRes = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(adminRes.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(inviteRes.status, 201);
+
+  const memberRes = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `RecoveryRoleMember-${suffix}`,
+      pin: '2222',
+      inviteCode: inviteRes.body.code
+    });
+  assert.equal(memberRes.status, 201);
+
+  const denied = await request(app)
+    .post('/api/auth/household/recover-reset')
+    .send({ memberName: `RecoveryRoleMember-${suffix}`, pin: '2222' });
+  assert.equal(denied.status, 403);
+});
+
 test('auth users endpoint requires inviteCode scope', async () => {
   const res = await request(app).get('/api/auth/users');
   assert.equal(res.status, 400);

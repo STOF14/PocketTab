@@ -103,6 +103,13 @@ UI style is intentionally minimalist/brutalist and the backend is an API-first N
 4. User selects member profile and enters 4-digit PIN.
 5. `POST /api/auth/login` validates PIN and issues a full session token.
 
+If a household forgets login details, PocketTab now supports a secure recovery reset:
+
+1. On the login screen, choose "Forgot Household ID Or Code?"
+2. Enter an admin/parent member name and PIN
+3. `POST /api/auth/household/recover-reset` rotates household login credentials and returns fresh values
+4. Continue sign-in using the new household ID/code
+
 ### Compatibility Behavior
 
 `POST /api/auth/login` still accepts direct `userId + pin` without `householdAccessToken` for compatibility with existing clients/tests.
@@ -123,6 +130,13 @@ Google users are linked by `google_sub` (primary) and `google_email` (fallback).
 - `admin`: full household admin operations, invite generation, household code rotation, member role changes
 - `parent`: elevated member management for child flows (such as PIN reset assistance)
 - `child`: regular member operations with restricted admin/parent actions
+
+### Credential Reset Flows
+
+- Self-service username update: `PATCH /api/users/me/name`
+- Self-service PIN change: `PATCH /api/users/pin`
+- Admin/parent member credential reset: `PATCH /api/users/:id/credentials-reset`
+- Existing admin PIN-only reset flow remains available: `POST /api/users/:id/pin-reset`
 
 ## Quick Start
 

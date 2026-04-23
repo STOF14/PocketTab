@@ -72,6 +72,29 @@ function rotateHouseholdLoginCode(householdId) {
   };
 }
 
+function resetHouseholdLoginCredentials(householdId, options = {}) {
+  const household = db.prepare('SELECT id, login_id FROM households WHERE id = ?').get(householdId);
+  if (!household) {
+    return null;
+  }
+
+  const rotateLoginId = options.rotateLoginId !== false;
+  const nextLoginId = rotateLoginId
+    ? allocateUniqueHouseholdLoginId(household.id)
+    : household.login_id;
+  const nextCode = generateHouseholdCode();
+
+  db.prepare('UPDATE households SET login_id = ?, login_code_hash = ? WHERE id = ?')
+    .run(nextLoginId, hashPin(nextCode), household.id);
+
+  return {
+    id: household.id,
+    login_id: nextLoginId,
+    login_code_plain: nextCode,
+    login_id_rotated: rotateLoginId
+  };
+}
+
 function getUserWithHousehold(userId) {
   return db.prepare('SELECT id, name, role, household_id, created_at FROM users WHERE id = ?').get(userId);
 }
@@ -139,6 +162,7 @@ module.exports = {
   getUserHousehold,
   getHouseholdByLoginId,
   rotateHouseholdLoginCode,
+  resetHouseholdLoginCredentials,
   getUserWithHousehold,
   areUsersInSameHousehold,
   createInvite,

@@ -48,6 +48,10 @@ function logResetAudit(req, payload) {
   }));
 }
 
+function normalizeUserName(value) {
+  return String(value || '').trim().slice(0, 20);
+}
+
 // GET /api/users/me — current authenticated profile
 router.get('/me', (req, res) => {
   const me = db.prepare(
@@ -136,6 +140,105 @@ router.patch('/pin', (req, res) => {
     sessionRevoked: true,
     nextAction: 'clear_token_and_redirect_to_login'
   });
+});
+
+// PATCH /api/users/me/name — Change the current user's username/display name
+router.patch('/me/name', (req, res) => {
+  const newName = normalizeUserName(req.body?.newName);
+  if (!newName) {
+    return res.status(400).json({ error: 'New username is required' });
+  }
+
+  const me = db.prepare('SELECT id, household_id, name FROM users WHERE id = ?').get(req.userId);
+  if (!me) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  const duplicate = db.prepare(
+    'SELECT id FROM users WHERE household_id = ? AND id != ? AND name = ? COLLATE NOCASE LIMIT 1'
+  ).get(me.household_id, me.id, newName);
+  if (duplicate) {
+    return res.status(400).json({ error: 'Username already taken in this household' });
+  }
+
+  db.prepare('UPDATE users SET name = ? WHERE id = ?').run(newName, me.id);
+  return res.json({
+    message: 'Username updated',
+    user: {
+      id: me.id,
+      name: newName
+    }
+  });
+});
+
+// PATCH /api/users/:id/credentials-reset — Parent/admin resets a member username and/or PIN
+router.patch('/:id/credentials-reset', requireParentOrAdmin, (req, res) => {
+  const requestedName = req.body?.newName;
+  const requestedPin = req.body?.newPin;
+
+  const hasNameUpdate = typeof requestedName === 'string' && requestedName.trim() !== '';
+  const hasPinUpdate = typeof requestedPin === 'string' && requestedPin.trim() !== '';
+  if (!hasNameUpdate && !hasPinUpdate) {
+    return res.status(400).json({ error: 'Provide newName and/or newPin' });
+  }
+
+  const target = db.prepare('SELECT id, role, name, household_id FROM users WHERE id = ?').get(req.params.id);
+  if (!target) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  if (target.household_id !== req.householdId) {
+    return res.status(403).json({ error: 'Cannot reset credentials for user outside your household' });
+  }
+  if (target.role === 'admin' && !isAdmin(req.userRole)) {
+    return res.status(403).json({ error: 'Only an admin can reset another admin credentials' });
+  }
+
+  const updates = [];
+  if (hasNameUpdate) {
+    const newName = normalizeUserName(requestedName);
+    if (!newName) {
+      return res.status(400).json({ error: 'New username is required' });
+    }
+
+    const duplicate = db.prepare(
+      'SELECT id FROM users WHERE household_id = ? AND id != ? AND name = ? COLLATE NOCASE LIMIT 1'
+    ).get(req.householdId, target.id, newName);
+    if (duplicate) {
+      return res.status(400).json({ error: 'Username already taken in this household' });
+    }
+
+    db.prepare('UPDATE users SET name = ? WHERE id = ?').run(newName, target.id);
+    updates.push('username');
+  }
+
+  if (hasPinUpdate) {
+    const newPin = String(requestedPin || '').trim();
+    if (!/^\d{4}$/.test(newPin)) {
+      return res.status(400).json({ error: 'New PIN must be 4 digits' });
+    }
+
+    db.prepare(
+      'UPDATE users SET pin_hash = ?, pin_hash_needs_rehash = 0, failed_login_attempts = 0, locked_until = NULL WHERE id = ?'
+    ).run(hashPin(newPin), target.id);
+    revokeAllSessionsForUser(target.id);
+    updates.push('PIN');
+  }
+
+  const response = {
+    message: `Updated ${updates.join(' and ')} for ${target.name}`,
+    updated: {
+      username: updates.includes('username'),
+      pin: updates.includes('PIN')
+    }
+  };
+
+  if (hasPinUpdate && target.id === req.userId) {
+    clearSessionCookie(res);
+    response.sessionRevoked = true;
+    response.nextAction = 'clear_token_and_redirect_to_login';
+  }
+
+  return res.json(response);
 });
 
 // POST /api/users/pin-recovery-request — Child requests help from parent/admin

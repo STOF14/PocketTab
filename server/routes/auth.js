@@ -21,7 +21,8 @@ const {
   createInvite,
   getUserHousehold,
   getHouseholdByLoginId,
-  rotateHouseholdLoginCode
+  rotateHouseholdLoginCode,
+  resetHouseholdLoginCredentials
 } = require('../services/households');
 const { hashPin, verifyPin, needsPinRehash } = require('../services/pin-security');
 const { isValidHouseholdCode, normalizeHouseholdLoginId } = require('../services/household-login');
@@ -500,6 +501,10 @@ function toPublicRole(role) {
   return role === 'admin' ? 'admin' : 'member';
 }
 
+function hasHouseholdRecoveryPrivileges(role) {
+  return role === 'admin' || role === 'parent';
+}
+
 // GET /api/auth/users — List all users (public, for login screen)
 router.get('/users', (req, res) => {
   let users = [];
@@ -553,6 +558,98 @@ router.post('/household/access', (req, res) => {
       loginId: household.login_id
     },
     members
+  });
+});
+
+// POST /api/auth/household/recover-reset — reset forgotten household login details
+router.post('/household/recover-reset', (req, res) => {
+  const memberName = String(req.body?.memberName || '').trim().slice(0, 20);
+  const pin = String(req.body?.pin || '').trim();
+  const householdName = String(req.body?.householdName || '').trim().slice(0, 80);
+  const rotateLoginId = req.body?.rotateLoginId !== false;
+
+  if (!memberName) {
+    return res.status(400).json({ error: 'Member name is required' });
+  }
+
+  if (!/^\d{4}$/.test(pin)) {
+    return res.status(400).json({ error: 'PIN must be 4 digits' });
+  }
+
+  const baseQuery = householdName
+    ? `SELECT u.id, u.household_id, u.role, u.pin_hash, u.locked_until, h.name as household_name
+       FROM users u
+       JOIN households h ON h.id = u.household_id
+       WHERE u.name = ? COLLATE NOCASE AND h.name = ? COLLATE NOCASE
+       LIMIT 25`
+    : `SELECT u.id, u.household_id, u.role, u.pin_hash, u.locked_until, h.name as household_name
+       FROM users u
+       JOIN households h ON h.id = u.household_id
+       WHERE u.name = ? COLLATE NOCASE
+       LIMIT 25`;
+  const candidates = householdName
+    ? db.prepare(baseQuery).all(memberName, householdName)
+    : db.prepare(baseQuery).all(memberName);
+
+  if (candidates.length === 0) {
+    return res.status(401).json({ error: 'Unable to verify recovery details' });
+  }
+
+  const now = Date.now();
+  let matched = null;
+  let matchedCount = 0;
+  let sawLockedCandidate = false;
+  let sawNonPrivilegedMatch = false;
+
+  for (const candidate of candidates) {
+    if (candidate.locked_until && new Date(candidate.locked_until).getTime() > now) {
+      sawLockedCandidate = true;
+      continue;
+    }
+
+    const pinCheck = verifyPin(pin, candidate.pin_hash);
+    if (!pinCheck.matched) {
+      continue;
+    }
+
+    if (!hasHouseholdRecoveryPrivileges(candidate.role)) {
+      sawNonPrivilegedMatch = true;
+      continue;
+    }
+
+    matched = candidate;
+    matchedCount += 1;
+  }
+
+  if (matchedCount > 1) {
+    return res.status(409).json({ error: 'Multiple households matched. Add householdName to recovery request.' });
+  }
+
+  if (!matched) {
+    if (sawNonPrivilegedMatch) {
+      return res.status(403).json({ error: 'Only a household admin or parent can reset household login details' });
+    }
+
+    if (sawLockedCandidate) {
+      return res.status(423).json({ error: 'Matched account is temporarily locked. Try again later.' });
+    }
+
+    return res.status(401).json({ error: 'Unable to verify recovery details' });
+  }
+
+  db.prepare('UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?').run(matched.id);
+
+  const reset = resetHouseholdLoginCredentials(matched.household_id, { rotateLoginId });
+  if (!reset) {
+    return res.status(404).json({ error: 'Household not found' });
+  }
+
+  return res.json({
+    message: 'Household login details reset',
+    householdLoginId: reset.login_id,
+    householdCode: reset.login_code_plain,
+    householdName: matched.household_name,
+    loginIdRotated: Boolean(reset.login_id_rotated)
   });
 });
 

@@ -113,6 +113,7 @@ if (config.rateLimit.enabled) {
     message: { error: 'Too many household access attempts, please try again later' }
   });
   app.use('/api/auth/household/access', householdAccessLimiter);
+  app.use('/api/auth/household/recover-reset', householdAccessLimiter);
 }
 
 // Serve static files from public/

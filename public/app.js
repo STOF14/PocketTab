@@ -438,13 +438,18 @@
 
       document.getElementById('login-member-stage').classList.add('hidden');
       document.getElementById('login-household-stage').classList.remove('hidden');
+      document.getElementById('household-recovery-panel').classList.add('hidden');
+      document.getElementById('btn-toggle-household-recovery').textContent = 'Forgot Household ID Or Code?';
       document.getElementById('pin-login').classList.add('hidden');
       document.getElementById('login-pin').value = '';
+      document.getElementById('recovery-member-name').value = '';
+      document.getElementById('recovery-member-pin').value = '';
       document.getElementById('login-household-summary').textContent = 'Select your profile';
       document.getElementById('user-list').innerHTML = '';
 
       hideError('login-household-error');
       hideError('login-error');
+      hideError('household-recovery-error');
     }
 
     function renderLoginHouseholdSummary() {
@@ -518,6 +523,59 @@
 
       hideError('login-household-error');
       hideError('login-error');
+      hideError('household-recovery-error');
+    }
+
+    function toggleHouseholdRecoveryPanel() {
+      var panel = document.getElementById('household-recovery-panel');
+      var trigger = document.getElementById('btn-toggle-household-recovery');
+      if (!panel || !trigger) {
+        return;
+      }
+
+      var willShow = panel.classList.contains('hidden');
+      panel.classList.toggle('hidden', !willShow);
+      trigger.textContent = willShow ? 'Hide Household Recovery' : 'Forgot Household ID Or Code?';
+      hideError('household-recovery-error');
+
+      if (willShow) {
+        document.getElementById('recovery-member-name').focus();
+      }
+    }
+
+    async function recoverHouseholdLoginDetails() {
+      var memberName = document.getElementById('recovery-member-name').value.trim();
+      var pin = document.getElementById('recovery-member-pin').value.trim();
+
+      hideError('household-recovery-error');
+      hideError('login-household-error');
+
+      if (!memberName) {
+        showError('household-recovery-error', 'Admin or parent name is required');
+        return;
+      }
+
+      if (!/^\d{4}$/.test(pin)) {
+        showError('household-recovery-error', 'PIN must be 4 digits');
+        return;
+      }
+
+      try {
+        var recovery = await api('POST', '/auth/household/recover-reset', {
+          memberName: memberName,
+          pin: pin,
+          rotateLoginId: true
+        });
+
+        document.getElementById('login-household-id').value = recovery.householdLoginId || '';
+        document.getElementById('login-household-code').value = recovery.householdCode || '';
+        document.getElementById('recovery-member-pin').value = '';
+
+        showError('login-household-error', 'Household details reset. Continue to member sign-in.');
+        await resolveHouseholdForLogin();
+      } catch (e) {
+        showError('household-recovery-error', e.message || 'Unable to reset household login details');
+      }
     }
 
     /** Render the user list on auth screen */
@@ -1750,9 +1808,34 @@
         list.appendChild(li);
       });
 
+      var usernameInput = document.getElementById('settings-new-name');
+      if (usernameInput) {
+        usernameInput.value = currentUser?.name || '';
+      }
+
       var householdLoginIdInput = document.getElementById('settings-household-login-id');
       if (householdLoginIdInput) {
         householdLoginIdInput.value = cachedHousehold?.loginId || cachedHousehold?.login_id || '';
+      }
+
+      var memberResetSection = document.getElementById('settings-member-reset-section');
+      var memberResetSelect = document.getElementById('settings-reset-user');
+      if (memberResetSection && memberResetSelect) {
+        var canResetMembers = currentUser && (currentUser.role === 'admin' || currentUser.role === 'parent');
+        memberResetSection.classList.toggle('hidden', !canResetMembers);
+
+        if (canResetMembers) {
+          memberResetSelect.innerHTML = '<option value="">-- Select member --</option>';
+          users.forEach(function(user) {
+            if (user.id === currentUser.id) {
+              return;
+            }
+            var option = document.createElement('option');
+            option.value = user.id;
+            option.textContent = user.name;
+            memberResetSelect.appendChild(option);
+          });
+        }
       }
 
       renderGoogleLinkSection();
@@ -1861,6 +1944,66 @@
         showError('settings-pin-error', 'PIN updated successfully');
       } catch (e) {
         showError('settings-pin-error', e.message || 'Failed to update PIN');
+      }
+    }
+
+    async function changeUsername() {
+      var newName = document.getElementById('settings-new-name').value.trim();
+      hideError('settings-name-error');
+
+      if (!newName) {
+        showError('settings-name-error', 'Username is required');
+        return;
+      }
+
+      try {
+        var result = await api('PATCH', '/users/me/name', { newName: newName });
+        if (result && result.user && result.user.name) {
+          currentUser.name = result.user.name;
+          document.getElementById('header-user-name').textContent = result.user.name;
+        }
+
+        await refreshApp();
+        showError('settings-name-error', 'Username updated');
+      } catch (e) {
+        showError('settings-name-error', e.message || 'Failed to update username');
+      }
+    }
+
+    async function resetMemberCredentials() {
+      var userId = document.getElementById('settings-reset-user').value;
+      var newName = document.getElementById('settings-reset-name').value.trim();
+      var newPin = document.getElementById('settings-reset-pin').value.trim();
+
+      hideError('settings-member-reset-error');
+
+      if (!userId) {
+        showError('settings-member-reset-error', 'Select a member first');
+        return;
+      }
+
+      if (!newName && !newPin) {
+        showError('settings-member-reset-error', 'Enter a new username or new PIN');
+        return;
+      }
+
+      if (newPin && !/^\d{4}$/.test(newPin)) {
+        showError('settings-member-reset-error', 'New PIN must be 4 digits');
+        return;
+      }
+
+      try {
+        await api('PATCH', '/users/' + encodeURIComponent(userId) + '/credentials-reset', {
+          newName: newName || undefined,
+          newPin: newPin || undefined
+        });
+
+        document.getElementById('settings-reset-name').value = '';
+        document.getElementById('settings-reset-pin').value = '';
+        await refreshApp();
+        showError('settings-member-reset-error', 'Member credentials updated');
+      } catch (e) {
+        showError('settings-member-reset-error', e.message || 'Failed to reset member credentials');
       }
     }
 
@@ -2013,6 +2156,8 @@
       });
 
       document.getElementById('btn-login-household').addEventListener('click', resolveHouseholdForLogin);
+      document.getElementById('btn-toggle-household-recovery').addEventListener('click', toggleHouseholdRecoveryPanel);
+      document.getElementById('btn-recover-household').addEventListener('click', recoverHouseholdLoginDetails);
       var googleLoginButton = document.getElementById('btn-google-login');
       if (googleLoginButton) {
         googleLoginButton.addEventListener('click', function() {
@@ -2024,6 +2169,9 @@
       });
       document.getElementById('login-household-code').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') resolveHouseholdForLogin();
+      });
+      document.getElementById('recovery-member-pin').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') recoverHouseholdLoginDetails();
       });
       document.getElementById('btn-change-household').addEventListener('click', changeLoginHousehold);
       document.getElementById('btn-login').addEventListener('click', attemptLogin);
@@ -2086,7 +2234,9 @@
         prefillPaymentFromHistoryForRecipient(event.target.value);
       });
       document.getElementById('btn-send-payment').addEventListener('click', sendPayment);
+      document.getElementById('btn-change-name').addEventListener('click', changeUsername);
       document.getElementById('btn-change-pin').addEventListener('click', changePin);
+      document.getElementById('btn-reset-member-credentials').addEventListener('click', resetMemberCredentials);
       var linkGoogleButton = document.getElementById('btn-link-google');
       if (linkGoogleButton) {
         linkGoogleButton.addEventListener('click', startGoogleLinkFlow);

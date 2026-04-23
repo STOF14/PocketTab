@@ -46,6 +46,80 @@ test('pin change response instructs client to clear token and relogin', async ()
   assert.equal(changeRes.body.nextAction, 'clear_token_and_redirect_to_login');
 });
 
+test('user can update own username when household name is unique', async () => {
+  const suffix = uniqueSuffix();
+  const admin = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `RenameAdmin-${suffix}`,
+      pin: '1234',
+      createHousehold: true,
+      householdName: `Rename Household ${suffix}`
+    });
+  assert.equal(admin.status, 201);
+
+  const rename = await request(app)
+    .patch('/api/users/me/name')
+    .set(auth(admin.body.token))
+    .send({ newName: `Renamed-${suffix}` });
+  assert.equal(rename.status, 200);
+  assert.equal(rename.body.user.name, `Renamed-${suffix}`);
+
+  const me = await request(app)
+    .get('/api/users/me')
+    .set(auth(admin.body.token));
+  assert.equal(me.status, 200);
+  assert.equal(me.body.name, `Renamed-${suffix}`);
+});
+
+test('username updates reject duplicates and admin can reset member credentials', async () => {
+  const suffix = uniqueSuffix();
+  const admin = await request(app)
+    .post('/api/auth/register')
+    .send({
+      name: `CredAdmin-${suffix}`,
+      pin: '1111',
+      createHousehold: true,
+      householdName: `Cred Household ${suffix}`
+    });
+  assert.equal(admin.status, 201);
+
+  const invite = await request(app)
+    .post('/api/auth/household/invites')
+    .set(auth(admin.body.token))
+    .send({ ttlHours: 24 });
+  assert.equal(invite.status, 201);
+
+  const child = await request(app)
+    .post('/api/auth/register')
+    .send({ name: `CredChild-${suffix}`, pin: '2222', inviteCode: invite.body.code });
+  assert.equal(child.status, 201);
+
+  const duplicateRename = await request(app)
+    .patch('/api/users/me/name')
+    .set(auth(child.body.token))
+    .send({ newName: `CredAdmin-${suffix}` });
+  assert.equal(duplicateRename.status, 400);
+
+  const reset = await request(app)
+    .patch(`/api/users/${child.body.user.id}/credentials-reset`)
+    .set(auth(admin.body.token))
+    .send({ newName: `CredChildReset-${suffix}`, newPin: '3333' });
+  assert.equal(reset.status, 200);
+  assert.equal(reset.body.updated.username, true);
+  assert.equal(reset.body.updated.pin, true);
+
+  const loginWithOldPin = await request(app)
+    .post('/api/auth/login')
+    .send({ userId: child.body.user.id, pin: '2222' });
+  assert.equal(loginWithOldPin.status, 401);
+
+  const loginWithNewPin = await request(app)
+    .post('/api/auth/login')
+    .send({ userId: child.body.user.id, pin: '3333' });
+  assert.equal(loginWithNewPin.status, 200);
+});
+
 test('auth rate limit persists across app restarts', async () => {
   const isolatedDbPath = path.join(os.tmpdir(), `pockettab-rate-limit-${crypto.randomUUID()}.db`);
   const baseEnv = {
