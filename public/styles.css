@@ -156,6 +156,13 @@
       text-wrap: balance;
     }
 
+    .landing-header-note-wrap {
+      border: var(--border);
+      background: var(--white);
+      padding: 7px 12px;
+      box-shadow: 4px 4px 0 0 #e5e5e1;
+    }
+
     .landing-header-actions {
       display: inline-flex;
       align-items: center;
@@ -379,8 +386,9 @@
       border: var(--border);
       background: var(--white);
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 0;
+      box-shadow: 6px 6px 0 0 #e8e8e3;
     }
 
     .landing-proof-strip span {
@@ -593,6 +601,15 @@
       font-weight: 700;
     }
 
+    .oauth-note {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.9px;
+      line-height: 1.4;
+      margin-bottom: 10px;
+      color: var(--ink-soft);
+    }
+
     .onboarding-warning {
       font-size: 11px;
       text-transform: uppercase;
@@ -767,6 +784,28 @@
     button.btn-navy:hover {
       background: var(--white);
       color: var(--navy);
+    }
+
+    button.btn-google {
+      background: var(--white);
+      color: var(--navy);
+      border-color: #777;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    button.btn-google:hover {
+      background: #ededed;
+      color: var(--navy);
+      box-shadow: 4px 4px 0 0 #999;
+    }
+
+    .google-icon {
+      width: 18px;
+      height: 18px;
+      flex: 0 0 auto;
     }
 
     /* ===== USER LIST (auth) ===== */
@@ -950,6 +989,33 @@
       font-size: clamp(28px, 8vw, 36px);
       font-weight: 700;
       line-height: 1;
+    }
+
+    .quick-actions-card {
+      border: var(--border);
+      margin-top: var(--pad);
+      padding: var(--pad);
+      background: var(--white);
+    }
+
+    .quick-actions-card h3 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 10px;
+    }
+
+    .quick-actions-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .quick-action-btn {
+      width: 100%;
+      text-align: left;
+      font-size: 12px;
+      min-height: 42px;
+      padding: 10px 12px;
     }
 
     /* ===== STATUS BADGES ===== */
@@ -1319,6 +1385,10 @@
       .landing-header-note {
         text-align: left;
         font-size: 12px;
+      }
+
+      .landing-header-note-wrap {
+        box-shadow: none;
       }
 
       .landing-header-actions {

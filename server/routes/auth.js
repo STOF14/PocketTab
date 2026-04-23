@@ -10,9 +10,11 @@ const {
   clearSessionCookie,
   revokeSession,
   requireRole,
-  HOUSEHOLD_ACCESS_TTL_MINUTES
+  HOUSEHOLD_ACCESS_TTL_MINUTES,
+  JWT_SECRET
 } = require('../middleware/auth');
 const crypto = require('crypto');
+const { OAuth2Client } = require('google-auth-library');
 const {
   consumeInvite,
   createHousehold,
@@ -30,6 +32,460 @@ const LOCK_MINUTES = Number.parseInt(process.env.PIN_LOCK_MINUTES || '15', 10);
 const requireExplicitHouseholdFlow = config.isProduction;
 const allowLegacyLoginWithoutHouseholdAccess =
   process.env.ALLOW_LEGACY_LOGIN_WITHOUT_HOUSEHOLD_ACCESS === 'true' || !config.isProduction;
+const GOOGLE_STATE_COOKIE_NAME = 'pt_google_oauth_state';
+const GOOGLE_ACTION_COOKIE_NAME = 'pt_google_oauth_action';
+const GOOGLE_STATE_TTL_MS = 10 * 60 * 1000;
+const GOOGLE_ACTION_TTL_MS = 10 * 60 * 1000;
+const googleOAuthClient = new OAuth2Client();
+const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || '').trim();
+const GOOGLE_CLIENT_SECRET = String(process.env.GOOGLE_CLIENT_SECRET || '').trim();
+
+function isGoogleAuthConfigured() {
+  return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
+}
+
+function parseForwardedHeaderValue(value) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return null;
+  }
+
+  const first = value.split(',')[0]?.trim();
+  return first || null;
+}
+
+function getRequestOrigin(req) {
+  const proto = parseForwardedHeaderValue(req.get('x-forwarded-proto')) || req.protocol || 'http';
+  const host = parseForwardedHeaderValue(req.get('x-forwarded-host')) || req.get('host');
+  return `${proto}://${host}`;
+}
+
+function getGoogleRedirectUri(req) {
+  const configured = process.env.GOOGLE_OAUTH_REDIRECT_URI;
+  if (configured && configured.trim()) {
+    return configured.trim();
+  }
+
+  return `${getRequestOrigin(req)}/api/auth/google/callback`;
+}
+
+function googleStateCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: config.isProduction,
+    sameSite: 'lax',
+    path: '/api/auth/google',
+    maxAge: GOOGLE_STATE_TTL_MS
+  };
+}
+
+function googleActionCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: config.isProduction,
+    sameSite: 'lax',
+    path: '/api/auth/google',
+    maxAge: GOOGLE_ACTION_TTL_MS
+  };
+}
+
+function googleStateCookieClearOptions() {
+  return {
+    httpOnly: true,
+    secure: config.isProduction,
+    sameSite: 'lax',
+    path: '/api/auth/google'
+  };
+}
+
+function googleActionCookieClearOptions() {
+  return {
+    httpOnly: true,
+    secure: config.isProduction,
+    sameSite: 'lax',
+    path: '/api/auth/google'
+  };
+}
+
+function toBase64Url(value) {
+  return Buffer.from(value, 'utf8').toString('base64url');
+}
+
+function fromBase64Url(value) {
+  return Buffer.from(value, 'base64url').toString('utf8');
+}
+
+function signGoogleActionPayload(encodedPayload) {
+  return crypto.createHmac('sha256', JWT_SECRET).update(encodedPayload).digest('hex');
+}
+
+function createGoogleActionToken(payload) {
+  const encodedPayload = toBase64Url(JSON.stringify(payload));
+  const signature = signGoogleActionPayload(encodedPayload);
+  return `${encodedPayload}.${signature}`;
+}
+
+function readGoogleActionToken(token) {
+  if (typeof token !== 'string' || token.trim() === '') {
+    return null;
+  }
+
+  const [encodedPayload, signature] = token.split('.');
+  if (!encodedPayload || !signature) {
+    return null;
+  }
+
+  const expectedSignature = signGoogleActionPayload(encodedPayload);
+  const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
+  const providedBuffer = Buffer.from(signature, 'utf8');
+  if (expectedBuffer.length !== providedBuffer.length) {
+    return null;
+  }
+
+  if (!crypto.timingSafeEqual(expectedBuffer, providedBuffer)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(fromBase64Url(encodedPayload));
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+
+    if (!Number.isFinite(Number(parsed.exp)) || Number(parsed.exp) <= Date.now()) {
+      return null;
+    }
+
+    if (parsed.mode !== 'login' && parsed.mode !== 'link') {
+      return null;
+    }
+
+    return parsed;
+  } catch (err) {
+    return null;
+  }
+}
+
+function parseCookieValue(req, cookieName) {
+  const cookieHeader = req.headers?.cookie;
+  if (typeof cookieHeader !== 'string' || cookieHeader.trim() === '') {
+    return null;
+  }
+
+  const targetPrefix = `${cookieName}=`;
+  for (const part of cookieHeader.split(';')) {
+    const trimmed = part.trim();
+    if (!trimmed.startsWith(targetPrefix)) {
+      continue;
+    }
+
+    const rawValue = trimmed.slice(targetPrefix.length);
+    try {
+      return decodeURIComponent(rawValue);
+    } catch (err) {
+      return rawValue;
+    }
+  }
+
+  return null;
+}
+
+function redirectWithGoogleAuthError(res, code) {
+  return res.redirect(303, `/app?auth_error=${encodeURIComponent(code)}`);
+}
+
+function redirectWithGoogleLinkResult(res, code) {
+  return res.redirect(303, `/app?auth_link=${encodeURIComponent(code)}`);
+}
+
+function normalizeGoogleDisplayName(payload) {
+  const candidateName = String(payload?.name || '').trim();
+  if (candidateName) {
+    return candidateName.slice(0, 20);
+  }
+
+  const emailPrefix = String(payload?.email || '').trim().split('@')[0];
+  if (emailPrefix) {
+    return emailPrefix.slice(0, 20);
+  }
+
+  return 'Google User';
+}
+
+function makeUnpredictablePin() {
+  return String(crypto.randomInt(0, 10000)).padStart(4, '0');
+}
+
+function googleAuthFailure(code, message) {
+  const err = new Error(message || code);
+  err.authErrorCode = code;
+  return err;
+}
+
+function beginGoogleAuth(req, res, actionPayload) {
+  const state = crypto.randomBytes(18).toString('hex');
+  const redirectUri = getGoogleRedirectUri(req);
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: 'openid email profile',
+    state,
+    access_type: 'online',
+    prompt: 'select_account'
+  });
+
+  const actionToken = createGoogleActionToken(actionPayload);
+  res.cookie(GOOGLE_STATE_COOKIE_NAME, state, googleStateCookieOptions());
+  res.cookie(GOOGLE_ACTION_COOKIE_NAME, actionToken, googleActionCookieOptions());
+  return res.redirect(302, `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+}
+
+// GET /api/auth/google/status — google auth availability for frontend
+router.get('/google/status', (req, res) => {
+  return res.json({ enabled: isGoogleAuthConfigured() });
+});
+
+// GET /api/auth/google/link/status — linked state for authenticated user
+router.get('/google/link/status', authenticateToken, (req, res) => {
+  const me = db.prepare('SELECT google_sub, google_email FROM users WHERE id = ?').get(req.userId);
+  return res.json({
+    enabled: isGoogleAuthConfigured(),
+    linked: Boolean(me?.google_sub),
+    email: me?.google_email || null
+  });
+});
+
+// GET /api/auth/google/start — start Google OAuth flow
+router.get('/google/start', (req, res) => {
+  if (!isGoogleAuthConfigured()) {
+    return redirectWithGoogleAuthError(res, 'google_not_configured');
+  }
+
+  return beginGoogleAuth(req, res, {
+    mode: 'login',
+    exp: Date.now() + GOOGLE_ACTION_TTL_MS
+  });
+});
+
+// GET /api/auth/google/link/start — start authenticated account-link flow
+router.get('/google/link/start', authenticateToken, (req, res) => {
+  if (!isGoogleAuthConfigured()) {
+    return redirectWithGoogleAuthError(res, 'google_not_configured');
+  }
+
+  return beginGoogleAuth(req, res, {
+    mode: 'link',
+    userId: req.userId,
+    exp: Date.now() + GOOGLE_ACTION_TTL_MS
+  });
+});
+
+// GET /api/auth/google/callback — complete Google OAuth and establish session
+router.get('/google/callback', async (req, res) => {
+  if (!isGoogleAuthConfigured()) {
+    return redirectWithGoogleAuthError(res, 'google_not_configured');
+  }
+
+  if (typeof req.query?.error === 'string' && req.query.error.trim()) {
+    res.clearCookie(GOOGLE_STATE_COOKIE_NAME, googleStateCookieClearOptions());
+    res.clearCookie(GOOGLE_ACTION_COOKIE_NAME, googleActionCookieClearOptions());
+    return redirectWithGoogleAuthError(res, 'google_access_denied');
+  }
+
+  const authorizationCode = String(req.query?.code || '').trim();
+  const callbackState = String(req.query?.state || '').trim();
+  const expectedState = parseCookieValue(req, GOOGLE_STATE_COOKIE_NAME);
+  const actionToken = parseCookieValue(req, GOOGLE_ACTION_COOKIE_NAME);
+  const action = readGoogleActionToken(actionToken) || {
+    mode: 'login',
+    exp: Date.now() + GOOGLE_ACTION_TTL_MS
+  };
+
+  if (!authorizationCode || !callbackState || !expectedState || callbackState !== expectedState) {
+    res.clearCookie(GOOGLE_STATE_COOKIE_NAME, googleStateCookieClearOptions());
+    res.clearCookie(GOOGLE_ACTION_COOKIE_NAME, googleActionCookieClearOptions());
+    return redirectWithGoogleAuthError(res, 'google_state_mismatch');
+  }
+
+  try {
+    const redirectUri = getGoogleRedirectUri(req);
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code: authorizationCode,
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code'
+      })
+    });
+
+    if (!tokenResponse.ok) {
+      let tokenError = null;
+      try {
+        tokenError = await tokenResponse.json();
+      } catch (parseErr) {
+        tokenError = null;
+      }
+
+      const oauthError = String(tokenError?.error || '').toLowerCase();
+      const oauthDescription = String(tokenError?.error_description || '').toLowerCase();
+
+      if (oauthError === 'invalid_client') {
+        throw googleAuthFailure('google_invalid_client', 'Google OAuth client credentials are invalid');
+      }
+
+      if (oauthDescription.includes('redirect_uri_mismatch')) {
+        throw googleAuthFailure('google_redirect_uri_mismatch', 'Google OAuth redirect URI mismatch');
+      }
+
+      throw googleAuthFailure('google_token_exchange_failed', 'Failed to exchange Google authorization code');
+    }
+
+    const tokenPayload = await tokenResponse.json();
+    const idToken = String(tokenPayload?.id_token || '').trim();
+    if (!idToken) {
+      throw googleAuthFailure('google_missing_id_token', 'Missing ID token from Google');
+    }
+
+    const ticket = await googleOAuthClient.verifyIdToken({
+      idToken,
+      audience: GOOGLE_CLIENT_ID
+    });
+    const googleProfile = ticket.getPayload() || {};
+    const googleSub = String(googleProfile.sub || '').trim();
+    const googleEmail = String(googleProfile.email || '').trim().toLowerCase();
+    const emailVerified = googleProfile.email_verified === true || googleProfile.email_verified === 'true';
+
+    if (!googleSub || !googleEmail || !emailVerified) {
+      throw googleAuthFailure('google_account_not_verified', 'Google account payload is incomplete');
+    }
+
+    if (action.mode === 'link') {
+      const targetUserId = String(action.userId || '').trim();
+      if (!targetUserId) {
+        throw new Error('Google link target user not found');
+      }
+
+      const targetUser = db.prepare('SELECT id, google_sub FROM users WHERE id = ?').get(targetUserId);
+      if (!targetUser) {
+        throw new Error('Google link target user not found');
+      }
+
+      const linkedBySub = db.prepare('SELECT id FROM users WHERE google_sub = ? LIMIT 1').get(googleSub);
+      if (linkedBySub && linkedBySub.id !== targetUser.id) {
+        res.clearCookie(GOOGLE_STATE_COOKIE_NAME, googleStateCookieClearOptions());
+        res.clearCookie(GOOGLE_ACTION_COOKIE_NAME, googleActionCookieClearOptions());
+        return redirectWithGoogleLinkResult(res, 'already_linked_elsewhere');
+      }
+
+      const linkedByEmail = db.prepare('SELECT id FROM users WHERE google_email = ? COLLATE NOCASE LIMIT 1').get(googleEmail);
+      if (linkedByEmail && linkedByEmail.id !== targetUser.id) {
+        res.clearCookie(GOOGLE_STATE_COOKIE_NAME, googleStateCookieClearOptions());
+        res.clearCookie(GOOGLE_ACTION_COOKIE_NAME, googleActionCookieClearOptions());
+        return redirectWithGoogleLinkResult(res, 'email_in_use_elsewhere');
+      }
+
+      if (targetUser.google_sub && targetUser.google_sub !== googleSub) {
+        res.clearCookie(GOOGLE_STATE_COOKIE_NAME, googleStateCookieClearOptions());
+        res.clearCookie(GOOGLE_ACTION_COOKIE_NAME, googleActionCookieClearOptions());
+        return redirectWithGoogleLinkResult(res, 'different_google_already_linked');
+      }
+
+      db.prepare('UPDATE users SET google_sub = ?, google_email = ? WHERE id = ?').run(googleSub, googleEmail, targetUser.id);
+      const token = issueSessionToken(targetUser.id, req);
+      setSessionCookie(res, token);
+      res.clearCookie(GOOGLE_STATE_COOKIE_NAME, googleStateCookieClearOptions());
+      res.clearCookie(GOOGLE_ACTION_COOKIE_NAME, googleActionCookieClearOptions());
+      return redirectWithGoogleLinkResult(res, 'google_success');
+    }
+
+    let user = db.prepare(
+      'SELECT id, household_id, name, role, created_at, google_email FROM users WHERE google_sub = ?'
+    ).get(googleSub);
+
+    if (!user) {
+      const linkedByEmail = db.prepare(
+        'SELECT id, household_id, name, role, created_at, google_sub, google_email FROM users WHERE google_email = ? COLLATE NOCASE LIMIT 1'
+      ).get(googleEmail);
+
+      if (linkedByEmail) {
+        db.prepare('UPDATE users SET google_sub = ?, google_email = ? WHERE id = ?').run(googleSub, googleEmail, linkedByEmail.id);
+        user = {
+          id: linkedByEmail.id,
+          household_id: linkedByEmail.household_id,
+          name: linkedByEmail.name,
+          role: linkedByEmail.role,
+          created_at: linkedByEmail.created_at,
+          google_email: googleEmail
+        };
+      }
+    }
+
+    if (!user) {
+      const createdAt = new Date().toISOString();
+      const displayName = normalizeGoogleDisplayName(googleProfile);
+      const createdHousehold = createHousehold(`${displayName}'s household`);
+      const newUserId = crypto.randomUUID();
+
+      db.prepare(
+        `INSERT INTO users (
+          id,
+          household_id,
+          name,
+          pin_hash,
+          pin_hash_needs_rehash,
+          role,
+          failed_login_attempts,
+          locked_until,
+          google_sub,
+          google_email,
+          created_at
+        ) VALUES (?, ?, ?, ?, 0, 'admin', 0, NULL, ?, ?, ?)`
+      ).run(
+        newUserId,
+        createdHousehold.id,
+        displayName,
+        hashPin(makeUnpredictablePin()),
+        googleSub,
+        googleEmail,
+        createdAt
+      );
+
+      user = {
+        id: newUserId,
+        household_id: createdHousehold.id,
+        name: displayName,
+        role: 'admin',
+        created_at: createdAt,
+        google_email: googleEmail
+      };
+    } else if (user.google_email !== googleEmail) {
+      db.prepare('UPDATE users SET google_email = ? WHERE id = ?').run(googleEmail, user.id);
+    }
+
+    const token = issueSessionToken(user.id, req);
+    setSessionCookie(res, token);
+    res.clearCookie(GOOGLE_STATE_COOKIE_NAME, googleStateCookieClearOptions());
+    res.clearCookie(GOOGLE_ACTION_COOKIE_NAME, googleActionCookieClearOptions());
+    return res.redirect(303, '/app');
+  } catch (err) {
+    const authErrorCode = typeof err?.authErrorCode === 'string' ? err.authErrorCode : 'google_sign_in_failed';
+    console.warn(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'warn',
+      type: 'google_oauth_error',
+      requestId: req.requestId || null,
+      path: req.originalUrl,
+      code: authErrorCode,
+      message: err?.message || 'Google OAuth failed'
+    }));
+    res.clearCookie(GOOGLE_STATE_COOKIE_NAME, googleStateCookieClearOptions());
+    res.clearCookie(GOOGLE_ACTION_COOKIE_NAME, googleActionCookieClearOptions());
+    return redirectWithGoogleAuthError(res, authErrorCode);
+  }
+});
 
 function retryAfterSeconds(lockedUntilIso) {
   const remainingMs = new Date(lockedUntilIso).getTime() - Date.now();

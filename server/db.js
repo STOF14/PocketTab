@@ -46,6 +46,8 @@ db.exec(`
     role TEXT NOT NULL DEFAULT 'child',
     failed_login_attempts INTEGER NOT NULL DEFAULT 0,
     locked_until TEXT,
+    google_sub TEXT,
+    google_email TEXT,
     created_at TEXT NOT NULL
   );
 
@@ -211,6 +213,8 @@ function ensureUsersHouseholdScopedNameUniqueness() {
         role TEXT NOT NULL DEFAULT 'child',
         failed_login_attempts INTEGER NOT NULL DEFAULT 0,
         locked_until TEXT,
+        google_sub TEXT,
+        google_email TEXT,
         created_at TEXT NOT NULL
       );
     `);
@@ -225,6 +229,8 @@ function ensureUsersHouseholdScopedNameUniqueness() {
         role,
         failed_login_attempts,
         locked_until,
+        google_sub,
+        google_email,
         created_at
       )
       SELECT
@@ -236,6 +242,8 @@ function ensureUsersHouseholdScopedNameUniqueness() {
         role,
         failed_login_attempts,
         locked_until,
+        google_sub,
+        google_email,
         created_at
       FROM users;
     `);
@@ -444,6 +452,8 @@ function ensureBaseMigrations() {
   ensureColumn('users', "role TEXT NOT NULL DEFAULT 'child'");
   ensureColumn('users', 'failed_login_attempts INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'locked_until TEXT');
+  ensureColumn('users', 'google_sub TEXT');
+  ensureColumn('users', 'google_email TEXT');
 
   ensureUsersHouseholdScopedNameUniqueness();
 
@@ -523,6 +533,8 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_allowances_child_active ON allowances(ch
 db.exec('CREATE INDEX IF NOT EXISTS idx_attachments_ref ON attachments(ref_type, ref_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_users_household ON users(household_id)');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_household_name_unique ON users(household_id, name COLLATE NOCASE)');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub_unique ON users(google_sub) WHERE google_sub IS NOT NULL');
+db.exec('CREATE INDEX IF NOT EXISTS idx_users_google_email ON users(google_email)');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_households_login_id ON households(login_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_household_invites_lookup ON household_invites(code, household_id, used_at, expires_at)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_rate_limit_window_start ON rate_limit_attempts(window_start)');

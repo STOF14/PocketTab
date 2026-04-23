@@ -195,11 +195,29 @@
       return req.status === 'settled' || req.status === 'rejected';
     }
 
+    function normalizeText(value) {
+      return String(value || '').trim().toLowerCase();
+    }
+
+    function toCents(amountValue) {
+      return Math.round(Number(amountValue || 0) * 100);
+    }
+
+    function createdAtDesc(a, b) {
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    }
+
     // ===== STATE =====
     var currentUser = null;
     var selectedLoginUser = null;
     var loginHouseholdAccessToken = null;
     var loginHouseholdContext = null;
+    var googleAuthEnabled = false;
+    var googleLinkStatus = {
+      enabled: false,
+      linked: false,
+      email: null
+    };
     var onboardingState = {
       step: 1,
       path: null,
@@ -218,16 +236,117 @@
       setupEventListeners();
       applyLandingMessageFromQuery();
       updateConnectivityFromNavigator();
+      await loadGoogleAuthAvailability();
+      var authErrorMessage = getGoogleAuthErrorMessageFromQuery();
+      var googleLinkMessage = getGoogleLinkMessageFromQuery();
+      var entryMode = getEntryModeFromPath();
 
       try {
         currentUser = await api('GET', '/users/me');
         enterApp();
+        if (googleLinkMessage) {
+          switchTab('settings');
+          showError('settings-google-link-error', googleLinkMessage);
+        }
         return;
       } catch (e) {
         // No active cookie-backed session.
       }
 
+      if (authErrorMessage) {
+        showAuth();
+        showError('login-household-error', authErrorMessage);
+        return;
+      }
+
+      if (entryMode === 'app') {
+        showAuth();
+        return;
+      }
+
       showLanding();
+    }
+
+    function getEntryModeFromPath() {
+      var pathname = window.location.pathname || '/';
+      if (pathname === '/app' || pathname === '/dashboard' || pathname.indexOf('/app/') === 0) {
+        return 'app';
+      }
+
+      if (pathname === '/new' || pathname === '/welcome' || pathname.indexOf('/new/') === 0 || pathname.indexOf('/welcome/') === 0) {
+        return 'landing';
+      }
+
+      return 'landing';
+    }
+
+    async function loadGoogleAuthAvailability() {
+      try {
+        var status = await api('GET', '/auth/google/status');
+        googleAuthEnabled = Boolean(status && status.enabled);
+      } catch (e) {
+        googleAuthEnabled = false;
+      }
+
+      applyGoogleLoginVisibility();
+    }
+
+    function applyGoogleLoginVisibility() {
+      var googleButton = document.getElementById('btn-google-login');
+      var googleNote = document.getElementById('oauth-login-note');
+      if (googleButton) {
+        googleButton.classList.toggle('hidden', !googleAuthEnabled);
+      }
+      if (googleNote) {
+        googleNote.classList.toggle('hidden', !googleAuthEnabled);
+      }
+    }
+
+    function getGoogleAuthErrorMessageFromQuery() {
+      if (typeof URLSearchParams === 'undefined') {
+        return null;
+      }
+
+      var params = new URLSearchParams(window.location.search || '');
+      var code = params.get('auth_error');
+      if (!code) {
+        return null;
+      }
+
+      var messages = {
+        google_not_configured: 'Google sign-in is not configured yet.',
+        google_access_denied: 'Google sign-in was cancelled.',
+        google_state_mismatch: 'Google sign-in could not be verified. Please try again.',
+        google_invalid_client: 'Google client credentials are invalid. Check client ID and secret on the server.',
+        google_redirect_uri_mismatch: 'Google redirect URI mismatch. Add /api/auth/google/callback in Google Cloud credentials.',
+        google_token_exchange_failed: 'Google sign-in could not be completed. Please verify OAuth app settings.',
+        google_missing_id_token: 'Google sign-in response was incomplete. Please try again.',
+        google_account_not_verified: 'Google account email must be verified to sign in.',
+        google_sign_in_failed: 'Google sign-in failed. Please try again.'
+      };
+
+      return messages[code] || 'Unable to sign in with Google right now.';
+    }
+
+    function getGoogleLinkMessageFromQuery() {
+      if (typeof URLSearchParams === 'undefined') {
+        return null;
+      }
+
+      var params = new URLSearchParams(window.location.search || '');
+      var code = params.get('auth_link');
+      if (!code) {
+        return null;
+      }
+
+      var messages = {
+        google_success: 'Google sign-in linked successfully.',
+        already_linked_elsewhere: 'That Google account is linked to another PocketTab user.',
+        email_in_use_elsewhere: 'That Google email is already linked to another PocketTab user.',
+        different_google_already_linked: 'A different Google account is already linked to your profile.'
+      };
+
+      return messages[code] || 'Google linking was not completed.';
     }
 
     function showLanding() {
@@ -239,11 +358,7 @@
     }
 
     function openAuthFromLanding() {
-      showAuth();
-      var householdInput = document.getElementById('login-household-id');
-      if (householdInput) {
-        householdInput.focus();
-      }
+      window.location.href = '/app';
     }
 
     function scrollLandingTo(sectionId) {
@@ -309,6 +424,7 @@
       resetLoginFlow();
       authCreate.classList.add('hidden');
       authSelect.classList.remove('hidden');
+      applyGoogleLoginVisibility();
       document.getElementById('login-household-id').value = '';
       document.getElementById('login-household-code').value = '';
       document.getElementById('login-household-id').focus();
@@ -779,7 +895,7 @@
     // ===== REFRESH ALL APP DATA =====
     async function refreshApp() {
       if (!currentUser) return;
-      await Promise.all([loadUsers(), loadRequests(), loadPayments(), loadHousehold()]);
+      await Promise.all([loadUsers(), loadRequests(), loadPayments(), loadHousehold(), loadGoogleLinkStatus()]);
       refreshDashboard();
       refreshRequests();
       refreshPayTab();
@@ -850,6 +966,7 @@
       }
 
       var hasAnyTransactions = requests.length > 0 || payments.length > 0;
+      renderDashboardQuickActions(uid);
       var emptyState = document.getElementById('dashboard-empty-state');
       var emptyCopy = document.getElementById('dashboard-empty-copy');
       var emptyAction = document.getElementById('btn-dashboard-empty-action');
@@ -876,6 +993,103 @@
       }
 
       emptyState.classList.remove('hidden');
+    }
+
+    function renderDashboardQuickActions(uid) {
+      var card = document.getElementById('dashboard-quick-actions');
+      var list = document.getElementById('dashboard-quick-actions-list');
+      if (!card || !list) {
+        return;
+      }
+
+      list.innerHTML = '';
+      var actions = [];
+
+      var pendingConfirmations = cachedPayments.filter(function(payment) {
+        return payment.to_id === uid && payment.status === 'sent';
+      }).sort(createdAtDesc);
+
+      pendingConfirmations.slice(0, 2).forEach(function(payment) {
+        actions.push({
+          key: 'confirm-payment',
+          paymentId: payment.id,
+          label: 'Confirm payment from ' + getUserName(payment.from_id) + ' (' + formatAmount(payment.amount) + ')'
+        });
+      });
+
+      var linkableRequests = getLinkableRequestsForPayment();
+      linkableRequests.slice(0, 2).forEach(function(req) {
+        actions.push({
+          key: 'open-linked-pay',
+          requestId: req.id,
+          label: 'Pay ' + getUserName(req.from_id) + ' for accepted request (' + formatAmount(req.remaining) + ' remaining)'
+        });
+      });
+
+      var incomingPendingCount = cachedRequests.filter(function(req) {
+        return req.to_id === uid && req.status === 'pending';
+      }).length;
+
+      if (incomingPendingCount > 0) {
+        actions.push({
+          key: 'open-incoming-requests',
+          label: 'Review ' + incomingPendingCount + ' incoming request' + (incomingPendingCount === 1 ? '' : 's')
+        });
+      }
+
+      if (actions.length === 0) {
+        card.classList.add('hidden');
+        return;
+      }
+
+      actions.slice(0, 4).forEach(function(action) {
+        var button = document.createElement('button');
+        button.className = 'quick-action-btn';
+        button.setAttribute('data-quick-action', action.key);
+        if (action.paymentId) {
+          button.setAttribute('data-payment-id', action.paymentId);
+        }
+        if (action.requestId) {
+          button.setAttribute('data-request-id', action.requestId);
+        }
+        button.textContent = action.label;
+        list.appendChild(button);
+      });
+
+      card.classList.remove('hidden');
+    }
+
+    async function handleDashboardQuickAction(event) {
+      var button = event.target.closest('button[data-quick-action]');
+      if (!button) {
+        return;
+      }
+
+      var action = button.getAttribute('data-quick-action');
+      if (action === 'confirm-payment') {
+        var paymentId = button.getAttribute('data-payment-id');
+        if (paymentId) {
+          await handlePayment(paymentId, 'confirmed');
+        }
+        return;
+      }
+
+      if (action === 'open-linked-pay') {
+        var requestId = button.getAttribute('data-request-id');
+        switchTab('pay');
+        refreshLinkedRequestOptions();
+        if (requestId) {
+          document.getElementById('pay-linked-request').value = requestId;
+          applyLinkedRequestSelection();
+        }
+        document.getElementById('pay-amount').focus();
+        return;
+      }
+
+      if (action === 'open-incoming-requests') {
+        switchTab('requests');
+        switchSubTab('incoming');
+      }
     }
 
     async function handleDashboardEmptyAction() {
@@ -1114,6 +1328,11 @@
 
       if (!valid) return;
 
+      if (isLikelyDuplicateRequest(toId, amountNum, reason)) {
+        showError('req-error', 'Similar request already exists. Use it or adjust amount/reason.');
+        return;
+      }
+
       try {
         await api('POST', '/requests', { toId: toId, amount: amountNum, reason: reason });
 
@@ -1126,6 +1345,30 @@
       } catch (e) {
         showError('req-error', e.message || 'Failed to send request');
       }
+    }
+
+    function isLikelyDuplicateRequest(toId, amountNum, reason) {
+      var now = Date.now();
+      var sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+      var targetAmountCents = toCents(amountNum);
+      var normalizedReason = normalizeText(reason);
+      return cachedRequests.some(function(req) {
+        if (req.from_id !== currentUser.id || req.to_id !== toId) {
+          return false;
+        }
+
+        if (!['pending', 'accepted', 'partially_settled', 'pending_approval'].includes(req.status)) {
+          return false;
+        }
+
+        var requestAmountCents = toCents(req.amount);
+        var createdAt = new Date(req.created_at).getTime();
+        if (!Number.isFinite(createdAt) || createdAt < now - sevenDaysMs) {
+          return false;
+        }
+
+        return requestAmountCents === targetAmountCents && normalizeText(req.reason) === normalizedReason;
+      });
     }
 
     // ===== PAY TAB =====
@@ -1354,8 +1597,48 @@
           '<span class="activity-text">' + escapeHtml(act.text) + '</span>' +
           '<span class="badge">' + act.status.toUpperCase() + '</span>' +
           '<span class="activity-time">' + formatTime(act.timestamp) + '</span>';
+
+        if (act.repeatable) {
+          var repeatButton = document.createElement('button');
+          repeatButton.className = 'btn-sm';
+          repeatButton.textContent = 'Repeat';
+          repeatButton.addEventListener('click', function() {
+            repeatActivityAction(act);
+          });
+          li.appendChild(repeatButton);
+        }
+
         historyList.appendChild(li);
       });
+    }
+
+    function repeatActivityAction(activityItem) {
+      if (!activityItem || !activityItem.repeatType || !activityItem.repeatPayload) {
+        return;
+      }
+
+      if (activityItem.repeatType === 'request') {
+        populateUserDropdowns();
+        switchTab('requests');
+        switchSubTab('new-request');
+        document.getElementById('req-user').value = activityItem.repeatPayload.toId || '';
+        document.getElementById('req-amount').value = Number(activityItem.repeatPayload.amount || 0).toFixed(2);
+        document.getElementById('req-reason').value = activityItem.repeatPayload.reason || '';
+        document.getElementById('req-amount').focus();
+        return;
+      }
+
+      if (activityItem.repeatType === 'payment') {
+        populateUserDropdowns();
+        switchTab('pay');
+        document.getElementById('pay-linked-request').value = '';
+        applyLinkedRequestSelection();
+        document.getElementById('pay-user').value = activityItem.repeatPayload.toId || '';
+        document.getElementById('pay-amount').value = Number(activityItem.repeatPayload.amount || 0).toFixed(2);
+        document.getElementById('pay-category').value = activityItem.repeatPayload.category || '';
+        document.getElementById('pay-message').value = activityItem.repeatPayload.message || '';
+        document.getElementById('pay-amount').focus();
+      }
     }
 
     /** Get all activity (requests + payments) for a user, sorted by time desc */
@@ -1369,10 +1652,16 @@
         var fromName = getUserName(r.from_id);
         var toName = getUserName(r.to_id);
         var reason = r.reason ? ' for ' + r.reason : '';
+        var isRepeatableRequest = r.from_id === uid;
         activity.push({
           text: fromName + ' \u2192 ' + toName + ' ' + formatAmount(r.amount) + ' request' + reason,
           status: r.status,
-          timestamp: r.resolved_at || r.created_at
+          timestamp: r.resolved_at || r.created_at,
+          repeatable: isRepeatableRequest,
+          repeatType: isRepeatableRequest ? 'request' : null,
+          repeatPayload: isRepeatableRequest
+            ? { toId: r.to_id, amount: Number(r.amount), reason: r.reason || '' }
+            : null
         });
       });
 
@@ -1380,10 +1669,16 @@
         if (p.from_id !== uid && p.to_id !== uid) return;
         var fromName = getUserName(p.from_id);
         var toName = getUserName(p.to_id);
+        var isRepeatablePayment = p.from_id === uid;
         activity.push({
           text: fromName + ' \u2192 ' + toName + ' ' + formatAmount(p.amount) + ' payment',
           status: p.status,
-          timestamp: p.resolved_at || p.created_at
+          timestamp: p.resolved_at || p.created_at,
+          repeatable: isRepeatablePayment,
+          repeatType: isRepeatablePayment ? 'payment' : null,
+          repeatPayload: isRepeatablePayment
+            ? { toId: p.to_id, amount: Number(p.amount), category: p.category || '', message: p.message || '' }
+            : null
         });
       });
 
@@ -1392,6 +1687,58 @@
     }
 
     // ===== SETTINGS =====
+    async function loadGoogleLinkStatus() {
+      if (!currentUser || !googleAuthEnabled) {
+        googleLinkStatus = {
+          enabled: googleAuthEnabled,
+          linked: false,
+          email: null
+        };
+        return;
+      }
+
+      try {
+        var status = await api('GET', '/auth/google/link/status');
+        googleLinkStatus = {
+          enabled: Boolean(status && status.enabled),
+          linked: Boolean(status && status.linked),
+          email: status && status.email ? String(status.email) : null
+        };
+      } catch (e) {
+        googleLinkStatus = {
+          enabled: googleAuthEnabled,
+          linked: false,
+          email: null
+        };
+      }
+    }
+
+    function renderGoogleLinkSection() {
+      var section = document.getElementById('settings-google-link-section');
+      var status = document.getElementById('settings-google-link-status');
+      var button = document.getElementById('btn-link-google');
+      if (!section || !status || !button) {
+        return;
+      }
+
+      var enabled = Boolean(googleLinkStatus && googleLinkStatus.enabled);
+      section.classList.toggle('hidden', !enabled);
+      if (!enabled) {
+        return;
+      }
+
+      hideError('settings-google-link-error');
+      if (googleLinkStatus.linked) {
+        status.textContent = googleLinkStatus.email
+          ? 'Linked to ' + googleLinkStatus.email
+          : 'Google sign-in is linked to your account.';
+        button.textContent = 'Re-Link Google Sign-In';
+      } else {
+        status.textContent = 'Google sign-in is currently not linked.';
+        button.textContent = 'Link Google Sign-In';
+      }
+    }
+
     function refreshSettings() {
       var users = cachedUsers;
       var list = document.getElementById('settings-user-list');
@@ -1406,6 +1753,79 @@
       var householdLoginIdInput = document.getElementById('settings-household-login-id');
       if (householdLoginIdInput) {
         householdLoginIdInput.value = cachedHousehold?.loginId || cachedHousehold?.login_id || '';
+      }
+
+      renderGoogleLinkSection();
+    }
+
+    function startGoogleLinkFlow() {
+      hideError('settings-google-link-error');
+
+      if (!googleAuthEnabled) {
+        showError('settings-google-link-error', 'Google sign-in is not configured yet.');
+        return;
+      }
+
+      window.location.href = '/api/auth/google/link/start';
+    }
+
+    function prefillRequestFromHistoryForRecipient(recipientId) {
+      if (!recipientId || !currentUser) {
+        return;
+      }
+
+      var previous = cachedRequests
+        .filter(function(req) {
+          return req.from_id === currentUser.id && req.to_id === recipientId;
+        })
+        .sort(createdAtDesc)[0];
+
+      if (!previous) {
+        return;
+      }
+
+      var amountField = document.getElementById('req-amount');
+      var reasonField = document.getElementById('req-reason');
+      if (amountField && !amountField.value) {
+        amountField.value = Number(previous.amount || 0).toFixed(2);
+      }
+      if (reasonField && !reasonField.value && previous.reason) {
+        reasonField.value = previous.reason;
+      }
+    }
+
+    function prefillPaymentFromHistoryForRecipient(recipientId) {
+      if (!recipientId || !currentUser) {
+        return;
+      }
+
+      var linkedRequestSelect = document.getElementById('pay-linked-request');
+      if (linkedRequestSelect && linkedRequestSelect.value) {
+        return;
+      }
+
+      var previous = cachedPayments
+        .filter(function(payment) {
+          return payment.from_id === currentUser.id && payment.to_id === recipientId;
+        })
+        .sort(createdAtDesc)[0];
+
+      if (!previous) {
+        return;
+      }
+
+      var amountField = document.getElementById('pay-amount');
+      var categoryField = document.getElementById('pay-category');
+      var messageField = document.getElementById('pay-message');
+
+      if (amountField && !amountField.value) {
+        amountField.value = Number(previous.amount || 0).toFixed(2);
+      }
+      if (categoryField && !categoryField.value && previous.category) {
+        categoryField.value = previous.category;
+      }
+      if (messageField && !messageField.value && previous.message) {
+        messageField.value = previous.message;
       }
     }
 
@@ -1593,6 +2013,12 @@
       });
 
       document.getElementById('btn-login-household').addEventListener('click', resolveHouseholdForLogin);
+      var googleLoginButton = document.getElementById('btn-google-login');
+      if (googleLoginButton) {
+        googleLoginButton.addEventListener('click', function() {
+          window.location.href = '/api/auth/google/start';
+        });
+      }
       document.getElementById('login-household-id').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') resolveHouseholdForLogin();
       });
@@ -1652,14 +2078,32 @@
       });
 
       document.getElementById('btn-send-request').addEventListener('click', sendRequest);
+      document.getElementById('req-user').addEventListener('change', function(event) {
+        prefillRequestFromHistoryForRecipient(event.target.value);
+      });
       document.getElementById('pay-linked-request').addEventListener('change', applyLinkedRequestSelection);
+      document.getElementById('pay-user').addEventListener('change', function(event) {
+        prefillPaymentFromHistoryForRecipient(event.target.value);
+      });
       document.getElementById('btn-send-payment').addEventListener('click', sendPayment);
       document.getElementById('btn-change-pin').addEventListener('click', changePin);
+      var linkGoogleButton = document.getElementById('btn-link-google');
+      if (linkGoogleButton) {
+        linkGoogleButton.addEventListener('click', startGoogleLinkFlow);
+      }
       document.getElementById('btn-generate-invite').addEventListener('click', generateHouseholdInvite);
       document.getElementById('btn-copy-invite').addEventListener('click', copyHouseholdInviteCode);
       document.getElementById('btn-rotate-household-code').addEventListener('click', rotateHouseholdLoginCode);
       document.getElementById('btn-reset-data').addEventListener('click', resetAllData);
       document.getElementById('btn-dashboard-empty-action').addEventListener('click', handleDashboardEmptyAction);
+      var quickActionsList = document.getElementById('dashboard-quick-actions-list');
+      if (quickActionsList) {
+        quickActionsList.addEventListener('click', function(event) {
+          handleDashboardQuickAction(event).catch(function() {
+            // Ignore quick-action handler errors and keep UI responsive.
+          });
+        });
+      }
     }
 
     // ===== START =====

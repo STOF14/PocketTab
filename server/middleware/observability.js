@@ -85,9 +85,9 @@ function securityHeaders(req, res, next) {
     "form-action 'self'",
     "object-src 'none'",
     "script-src 'self'",
-    "style-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "img-src 'self' data:",
-    "font-src 'self'",
+    "font-src 'self' https: data:",
     "connect-src 'self'"
   ];
 

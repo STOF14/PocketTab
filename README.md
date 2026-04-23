@@ -49,6 +49,10 @@ UI style is intentionally minimalist/brutalist and the backend is an API-first N
   - JWT access tokens
   - Session table with revocation and activity metadata
   - Session revocation endpoints
+- Optional Google sign-in:
+  - OAuth 2.0 authorization code flow
+  - Automatic session cookie issuance
+  - Redirects directly into dashboard when successful
 - Request lifecycle:
   - pending, accepted, rejected, partially settled, settled
   - child request approval path
@@ -103,6 +107,17 @@ UI style is intentionally minimalist/brutalist and the backend is an API-first N
 
 `POST /api/auth/login` still accepts direct `userId + pin` without `householdAccessToken` for compatibility with existing clients/tests.
 
+### Optional Google Sign-In
+
+When configured, users can choose Google sign-in from the login screen:
+
+1. Browser starts `GET /api/auth/google/start`.
+2. Google redirects back to `GET /api/auth/google/callback`.
+3. Backend verifies ID token and establishes a PocketTab session cookie.
+4. User is redirected to `/` and enters the dashboard directly.
+
+Google users are linked by `google_sub` (primary) and `google_email` (fallback). If no matching account exists, PocketTab provisions a new admin user and household.
+
 ### Role Rules (High-level)
 
 - `admin`: full household admin operations, invite generation, household code rotation, member role changes
@@ -123,7 +138,9 @@ npm install
 npm start
 ```
 
-App URL: <http://localhost:3000>
+New users URL (landing): <http://localhost:3000/new>
+
+Existing users URL (direct app/auth): <http://localhost:3000/app>
 
 ### Run tests
 
@@ -156,6 +173,9 @@ npm run monitor:health
 | `SESSION_COOKIE_NAME` | `pt_session` | Name of httpOnly session cookie |
 | `HOUSEHOLD_ACCESS_TTL_MINUTES` | `10` (clamped 1-30) | Temporary household-access token lifetime |
 | `ALLOW_LEGACY_LOGIN_WITHOUT_HOUSEHOLD_ACCESS` | `false` in production, `true` otherwise | Allow direct PIN login without household access token |
+| `GOOGLE_CLIENT_ID` | unset | Enables Google OAuth when set with secret |
+| `GOOGLE_CLIENT_SECRET` | unset | Google OAuth client secret |
+| `GOOGLE_OAUTH_REDIRECT_URI` | unset | Optional explicit callback URI; default is `{request-origin}/api/auth/google/callback` |
 | `PIN_MAX_ATTEMPTS` | `5` | Failed login attempts before lock |
 | `PIN_LOCK_MINUTES` | `15` | Lockout duration |
 
@@ -288,6 +308,11 @@ All API routes are mounted under `/api`.
 | GET | `/api/auth/invites/:code` | No | Validate invite code and preview household |
 | POST | `/api/auth/register` | No | Register user (join by invite or create household) |
 | POST | `/api/auth/login` | No | Login with `userId + pin` (production requires `householdAccessToken` unless explicitly overridden) |
+| GET | `/api/auth/google/status` | No | Returns whether Google OAuth is enabled |
+| GET | `/api/auth/google/start` | No | Start Google OAuth sign-in flow |
+| GET | `/api/auth/google/link/start` | Yes | Start Google OAuth account-link flow for signed-in user |
+| GET | `/api/auth/google/callback` | No | Complete Google OAuth sign-in flow and issue session |
+| GET | `/api/auth/google/link/status` | Yes | Returns Google-link state for current user |
 | POST | `/api/auth/logout` | Yes | Revoke current session |
 | GET | `/api/auth/household` | Yes | Current household details |
 | GET | `/api/auth/household/members` | Yes | Members in current household |
@@ -377,6 +402,9 @@ Other behavior:
 
 - Session authentication uses an httpOnly same-site cookie (default name `pt_session`)
 - API calls are made to same-origin `/api/*`
+- Route-based entry points:
+  - `/new` (or `/welcome`) for the landing page/new users
+  - `/app` for existing users (goes directly to auth/app shell, no landing page)
 
 ## Operations Runbook
 
